@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+
+# Tauri and Rust build output
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+Desktop.ini
