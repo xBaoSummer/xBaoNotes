@@ -70,6 +70,44 @@ button:disabled {
     var(--app-bg);
 }
 
+.lock-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.1), transparent 34%),
+    var(--app-bg);
+}
+
+.lock-panel {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  width: min(380px, 100%);
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+
+.lock-panel p {
+  color: var(--muted);
+}
+
+.lock-panel input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-strong);
+  outline: none;
+}
+
 .sidebar,
 .workspace,
 .notes-panel,
@@ -831,6 +869,67 @@ h2 {
   width: 18px;
   height: 18px;
   accent-color: var(--accent);
+}
+
+.setting-select,
+.setting-row input {
+  min-height: 36px;
+  width: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-strong);
+  outline: none;
+}
+
+.split-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.split-actions button {
+  flex: 1;
+  min-width: 118px;
+}
+
+.path-code {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--app-bg);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.backup-list {
+  display: grid;
+  gap: 8px;
+}
+
+.backup-card {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.backup-card span,
+.backup-card code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.backup-card code {
+  font-family: Consolas, "Cascadia Mono", monospace;
 }
 
 .compact-heading {

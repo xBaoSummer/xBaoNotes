@@ -482,3 +482,51 @@
 - Windows 通知权限被拒绝时，到期提醒会继续保留并等待后续授权。
 - 当前提醒检查依赖主窗口进程存活；主窗口默认隐藏但仍存在，适合贴边入口和托盘启动模式。
 - Phase 8 未做复杂日历表达式，后续如需“每个工作日”等规则可单独扩展。
+
+## 2026-06-13 Phase 9 密码锁和备份恢复
+
+### Completed
+
+- 新增 Argon2 密码哈希依赖，密码不明文保存。
+- 新增密码锁安全状态、启用密码、验证密码、修改密码、关闭密码锁、设置自动锁定时间命令。
+- 普通设置列表会过滤 `password_hash`，避免前端直接读取敏感哈希。
+- 主界面新增锁屏，密码锁启用后启动软件需要输入密码。
+- 支持自动锁定和立即锁定。
+- 密码锁开启时，软件启动不会直接恢复贴出窗口；解锁后恢复贴出窗口并重新置顶。
+- 手动锁定或自动锁定时关闭贴出窗口，但保留贴出状态以便解锁后恢复。
+- 新增系统文件夹选择对话框，用于选择备份目录和恢复来源。
+- 新增手动备份功能，备份 `Data`、`Attachments`、`Recycle Bin` 和 `backup-manifest.json`。
+- 新增备份列表，显示最近备份目录、时间和大小。
+- 新增从备份恢复功能，恢复前自动创建 `Before Restore` 当前数据保护备份。
+- 恢复操作只清理受管理的数据子目录，并加入路径校验防护。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `package.json`
+- `package-lock.json`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/capabilities/default.json`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，7 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+
+### Risks
+
+- 当前密码锁属于软件访问保护，不加密 SQLite 数据库和附件文件。
+- 当前备份产物为目录结构，不是压缩包；正式 Release 可继续保留目录备份，便携版分发会单独生成 zip。
+- 恢复备份时需要应用保持运行，恢复后会重新初始化本地存储状态。

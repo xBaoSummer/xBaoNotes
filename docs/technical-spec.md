@@ -192,6 +192,19 @@ Phase 8 已实现提醒系统基础能力：
 - 一次性提醒触发后自动停用；重复提醒触发后自动计算下一次提醒时间。
 - 通知权限由前端在首次需要弹出提醒时请求。
 
+Phase 9 已实现密码锁和备份恢复基础能力：
+
+- 新增安全状态命令：`get_security_state`。
+- 新增密码锁命令：`setup_password`、`verify_password`、`change_password`、`disable_password`、`set_auto_lock_minutes`。
+- 密码使用 Argon2 哈希保存到 `settings.password_hash`，普通 `list_settings` 不返回该敏感字段。
+- 新增自动锁定设置 `auto_lock_minutes`，支持不自动锁定、1 分钟、5 分钟、15 分钟、30 分钟、60 分钟等前端选项。
+- 密码锁启用后，应用启动时不恢复贴出的桌面便签窗口；用户解锁后调用 `restore_sticky_windows_after_unlock` 恢复。
+- 用户手动锁定或自动锁定时，调用 `close_sticky_windows_for_lock` 关闭贴出窗口，但保留数据库中的贴出状态，方便解锁后恢复。
+- 新增备份命令：`create_backup`、`list_backups`、`restore_backup`。
+- 手动备份写入带时间戳的备份目录，包含 `Data`、`Attachments`、`Recycle Bin` 和 `backup-manifest.json`。
+- 恢复备份前自动创建 `Before Restore` 安全备份。
+- 恢复操作只覆盖受管理的数据子目录，并在清理目录前校验目标路径位于 xBaoNotes 数据根目录内。
+
 `notes` 至少包含：
 
 - `id`
@@ -228,10 +241,10 @@ Phase 8 已实现提醒系统基础能力：
 - 附件目录
 - 设置文件
 
-备份包建议使用带时间戳的目录或压缩包，例如：
+当前备份使用带时间戳的目录，例如：
 
 ```text
-Backup\2026-06-12_153000
+Backup\Manual Backup_20260613_153000
 ```
 
 恢复备份前必须提示用户，并保留当前数据的一份临时备份。
@@ -241,7 +254,7 @@ Backup\2026-06-12_153000
 第一阶段建议实现应用访问密码锁：
 
 - 密码不明文保存。
-- 保存密码哈希和盐。
+- 使用 Argon2 保存带盐的密码哈希。
 - 支持关闭密码锁。
 - 支持自动锁定时间。
 

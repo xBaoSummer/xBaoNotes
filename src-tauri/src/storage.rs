@@ -1,3 +1,5 @@
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use chrono::{DateTime, Duration, Months, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -108,6 +110,20 @@ pub struct ReminderRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SecurityState {
+    pub lock_enabled: bool,
+    pub auto_lock_minutes: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupRecord {
+    pub name: String,
+    pub path: String,
+    pub created_at: String,
+    pub size: i64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateFolderRequest {
     pub name: String,
@@ -212,6 +228,38 @@ pub struct ReminderIdRequest {
 pub struct ListRemindersRequest {
     pub note_id: Option<String>,
     pub include_disabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupPasswordRequest {
+    pub password: String,
+    pub auto_lock_minutes: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyPasswordRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DisablePasswordRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetAutoLockMinutesRequest {
+    pub minutes: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestoreBackupRequest {
+    pub backup_path: String,
 }
 
 pub fn init_storage() -> Result<StorageStatus, String> {
@@ -770,6 +818,7 @@ pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
         .prepare(
             "SELECT key, value, updated_at
              FROM settings
+             WHERE key NOT IN ('password_hash')
              ORDER BY key ASC",
         )
         .map_err(|error| error.to_string())?;
@@ -799,26 +848,177 @@ pub fn set_setting(request: SetSettingRequest) -> Result<SettingRecord, String> 
             | "edge_position"
             | "edge_entry_enabled"
             | "auto_start_enabled"
+            | "auto_lock_minutes"
     ) {
         return Err("不支持的设置项".to_string());
     }
 
+    if key == "auto_lock_minutes" {
+        normalize_auto_lock_minutes(
+            request
+                .value
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| "自动锁定时间必须是数字".to_string())?,
+        )?;
+    }
+
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
-    let now = Utc::now().to_rfc3339();
+    set_setting_value(&connection, key, &request.value)
+}
 
-    connection
-        .execute(
-            "INSERT INTO settings (key, value, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at",
-            params![key, request.value, now],
-        )
-        .map_err(|error| error.to_string())?;
+pub fn get_security_state() -> Result<SecurityState, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let lock_enabled = get_setting_value(&connection, "password_lock_enabled")?
+        .as_deref()
+        == Some("true");
+    let auto_lock_minutes = get_setting_value(&connection, "auto_lock_minutes")?
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(5);
 
-    get_setting(&connection, key)
+    Ok(SecurityState {
+        lock_enabled,
+        auto_lock_minutes,
+    })
+}
+
+pub fn setup_password(request: SetupPasswordRequest) -> Result<SecurityState, String> {
+    let password_hash = hash_password(&request.password)?;
+    let auto_lock_minutes = normalize_auto_lock_minutes(request.auto_lock_minutes.unwrap_or(5))?;
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+
+    set_setting_value(&connection, "password_hash", &password_hash)?;
+    set_setting_value(&connection, "password_lock_enabled", "true")?;
+    set_setting_value(
+        &connection,
+        "auto_lock_minutes",
+        &auto_lock_minutes.to_string(),
+    )?;
+
+    get_security_state()
+}
+
+pub fn verify_password(request: VerifyPasswordRequest) -> Result<bool, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let Some(password_hash) = get_setting_value(&connection, "password_hash")? else {
+        return Ok(false);
+    };
+
+    if password_hash.trim().is_empty() {
+        return Ok(false);
+    }
+
+    verify_password_hash(&password_hash, &request.password)
+}
+
+pub fn change_password(request: ChangePasswordRequest) -> Result<SecurityState, String> {
+    if !verify_password(VerifyPasswordRequest {
+        password: request.current_password,
+    })? {
+        return Err("当前密码不正确".to_string());
+    }
+
+    let password_hash = hash_password(&request.new_password)?;
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    set_setting_value(&connection, "password_hash", &password_hash)?;
+    set_setting_value(&connection, "password_lock_enabled", "true")?;
+
+    get_security_state()
+}
+
+pub fn disable_password(request: DisablePasswordRequest) -> Result<SecurityState, String> {
+    if !verify_password(VerifyPasswordRequest {
+        password: request.password,
+    })? {
+        return Err("密码不正确".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    set_setting_value(&connection, "password_lock_enabled", "false")?;
+    set_setting_value(&connection, "password_hash", "")?;
+
+    get_security_state()
+}
+
+pub fn set_auto_lock_minutes(
+    request: SetAutoLockMinutesRequest,
+) -> Result<SecurityState, String> {
+    let minutes = normalize_auto_lock_minutes(request.minutes)?;
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    set_setting_value(&connection, "auto_lock_minutes", &minutes.to_string())?;
+
+    get_security_state()
+}
+
+pub fn create_backup() -> Result<BackupRecord, String> {
+    create_backup_with_prefix("Manual Backup")
+}
+
+pub fn list_backups() -> Result<Vec<BackupRecord>, String> {
+    let paths = ensure_app_paths()?;
+    let backup_dir = PathBuf::from(&paths.backup_dir);
+
+    if !backup_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut backups = Vec::new();
+
+    for entry in fs::read_dir(&backup_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+
+        if !path.is_dir() || !path.join("Data").join(DATABASE_FILE_NAME).is_file() {
+            continue;
+        }
+
+        backups.push(backup_record_from_path(path)?);
+    }
+
+    backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(backups)
+}
+
+pub fn restore_backup(request: RestoreBackupRequest) -> Result<StorageStatus, String> {
+    let backup_path = PathBuf::from(request.backup_path.trim());
+
+    if !backup_path.join("Data").join(DATABASE_FILE_NAME).is_file() {
+        return Err("备份目录无效，未找到 Data\\xbao-notes.sqlite3".to_string());
+    }
+
+    create_backup_with_prefix("Before Restore")?;
+
+    let paths = ensure_app_paths()?;
+    let data_dir = PathBuf::from(&paths.data_dir);
+    let attachments_dir = PathBuf::from(&paths.attachments_dir);
+    let recycle_bin_dir = PathBuf::from(&paths.recycle_bin_dir);
+    let root_dir = PathBuf::from(&paths.root_dir);
+
+    ensure_managed_child_dir(&root_dir, &data_dir)?;
+    ensure_managed_child_dir(&root_dir, &attachments_dir)?;
+    ensure_managed_child_dir(&root_dir, &recycle_bin_dir)?;
+
+    remove_dir_contents(&data_dir)?;
+    copy_dir_contents(&backup_path.join("Data"), &data_dir)?;
+
+    remove_dir_contents(&attachments_dir)?;
+    if backup_path.join("Attachments").is_dir() {
+        copy_dir_contents(&backup_path.join("Attachments"), &attachments_dir)?;
+    }
+
+    remove_dir_contents(&recycle_bin_dir)?;
+    if backup_path.join("Recycle Bin").is_dir() {
+        copy_dir_contents(&backup_path.join("Recycle Bin"), &recycle_bin_dir)?;
+    }
+
+    init_storage()
 }
 
 pub fn post_sticky_note(request: NoteIdRequest) -> Result<StickyWindowRecord, String> {
@@ -1376,6 +1576,8 @@ fn ensure_default_settings(connection: &Connection, paths: &AppPaths) -> Result<
     set_default_setting(connection, "edge_position", "right")?;
     set_default_setting(connection, "edge_entry_enabled", "true")?;
     set_default_setting(connection, "auto_start_enabled", "false")?;
+    set_default_setting(connection, "password_lock_enabled", "false")?;
+    set_default_setting(connection, "auto_lock_minutes", "5")?;
     set_default_setting(connection, "backup_dir", &paths.backup_dir)?;
     set_default_setting(connection, "recycle_bin_dir", &paths.recycle_bin_dir)
 }
@@ -1470,6 +1672,75 @@ fn get_setting(connection: &Connection, key: &str) -> Result<SettingRecord, Stri
             },
         )
         .map_err(|error| error.to_string())
+}
+
+fn get_setting_value(connection: &Connection, key: &str) -> Result<Option<String>, String> {
+    let value = connection.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    );
+
+    match value {
+        Ok(value) => Ok(Some(value)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn set_setting_value(
+    connection: &Connection,
+    key: &str,
+    value: &str,
+) -> Result<SettingRecord, String> {
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            "INSERT INTO settings (key, value, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at",
+            params![key, value, now],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_setting(connection, key)
+}
+
+fn normalize_auto_lock_minutes(minutes: i64) -> Result<i64, String> {
+    if !(0..=240).contains(&minutes) {
+        return Err("自动锁定时间必须在 0 到 240 分钟之间".to_string());
+    }
+
+    Ok(minutes)
+}
+
+fn validate_password(password: &str) -> Result<(), String> {
+    let password = password.trim();
+
+    if password.len() < 6 {
+        return Err("密码至少需要 6 个字符".to_string());
+    }
+
+    Ok(())
+}
+
+fn hash_password(password: &str) -> Result<String, String> {
+    validate_password(password)?;
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn verify_password_hash(password_hash: &str, password: &str) -> Result<bool, String> {
+    let parsed_hash = PasswordHash::new(password_hash).map_err(|error| error.to_string())?;
+
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed_hash)
+        .is_ok())
 }
 
 fn ensure_folder_exists(connection: &Connection, folder_id: &str) -> Result<(), String> {
@@ -1872,6 +2143,168 @@ fn collect_rows<T>(
         .map_err(|error| error.to_string())
 }
 
+fn create_backup_with_prefix(prefix: &str) -> Result<BackupRecord, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    connection
+        .execute_batch("PRAGMA wal_checkpoint(FULL);")
+        .map_err(|error| error.to_string())?;
+    let backup_dir = get_setting_value(&connection, "backup_dir")?
+        .unwrap_or_else(|| paths.backup_dir.clone());
+    drop(connection);
+
+    let timestamp = Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let safe_prefix = sanitize_file_name(prefix);
+    let target_dir = PathBuf::from(backup_dir).join(format!("{safe_prefix}_{timestamp}"));
+    fs::create_dir_all(&target_dir)
+        .map_err(|error| format!("无法创建备份目录 {}: {}", target_dir.display(), error))?;
+
+    copy_dir_contents(&PathBuf::from(&paths.data_dir), &target_dir.join("Data"))?;
+    copy_dir_contents(
+        &PathBuf::from(&paths.attachments_dir),
+        &target_dir.join("Attachments"),
+    )?;
+    copy_dir_contents(
+        &PathBuf::from(&paths.recycle_bin_dir),
+        &target_dir.join("Recycle Bin"),
+    )?;
+
+    let manifest = serde_json::json!({
+        "app": APP_DIR_NAME,
+        "created_at": Utc::now().to_rfc3339(),
+        "database": DATABASE_FILE_NAME,
+        "kind": prefix,
+    });
+    fs::write(
+        target_dir.join("backup-manifest.json"),
+        serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+
+    backup_record_from_path(target_dir)
+}
+
+fn backup_record_from_path(path: PathBuf) -> Result<BackupRecord, String> {
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+    let created_at = metadata
+        .modified()
+        .map(DateTime::<Utc>::from)
+        .unwrap_or_else(|_| Utc::now())
+        .to_rfc3339();
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Backup")
+        .to_string();
+    let size = directory_size(&path)?;
+
+    Ok(BackupRecord {
+        name,
+        path: path_to_string(path),
+        created_at,
+        size,
+    })
+}
+
+fn directory_size(path: &Path) -> Result<i64, String> {
+    if path.is_file() {
+        return fs::metadata(path)
+            .map(|metadata| metadata.len() as i64)
+            .map_err(|error| error.to_string());
+    }
+
+    let mut total = 0_i64;
+
+    if !path.exists() {
+        return Ok(total);
+    }
+
+    for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        total += directory_size(&entry.path())?;
+    }
+
+    Ok(total)
+}
+
+fn copy_dir_contents(source: &Path, target: &Path) -> Result<(), String> {
+    fs::create_dir_all(target)
+        .map_err(|error| format!("无法创建目录 {}: {}", target.display(), error))?;
+
+    if !source.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_dir_contents(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).map_err(|error| {
+                format!(
+                    "无法复制文件 {} 到 {}: {}",
+                    source_path.display(),
+                    target_path.display(),
+                    error
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn remove_dir_contents(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path)
+        .map_err(|error| format!("无法创建目录 {}: {}", path.display(), error))?;
+
+    for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let entry_path = entry.path();
+
+        if entry_path.is_dir() {
+            fs::remove_dir_all(&entry_path)
+                .map_err(|error| format!("无法删除目录 {}: {}", entry_path.display(), error))?;
+        } else {
+            fs::remove_file(&entry_path)
+                .map_err(|error| format!("无法删除文件 {}: {}", entry_path.display(), error))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_managed_child_dir(root: &Path, target: &Path) -> Result<(), String> {
+    let root = root
+        .canonicalize()
+        .map_err(|error| format!("无法确认数据根目录 {}: {}", root.display(), error))?;
+    let target = if target.exists() {
+        target
+            .canonicalize()
+            .map_err(|error| format!("无法确认目录 {}: {}", target.display(), error))?
+    } else {
+        let parent = target
+            .parent()
+            .ok_or("目标目录缺少父目录".to_string())?
+            .canonicalize()
+            .map_err(|error| format!("无法确认父目录 {}: {}", target.display(), error))?;
+        parent.join(
+            target
+                .file_name()
+                .ok_or("目标目录名称无效".to_string())?,
+        )
+    };
+
+    if !target.starts_with(&root) || target == root {
+        return Err("恢复目标目录不在 xBaoNotes 数据目录内，已取消操作".to_string());
+    }
+
+    Ok(())
+}
+
 fn path_to_string(path: PathBuf) -> String {
     path.to_string_lossy().to_string()
 }
@@ -1896,7 +2329,7 @@ mod tests {
         ensure_default_settings(&connection, &paths).expect("seed settings");
         let default_folder_id = ensure_default_folder(&connection).expect("seed folder");
 
-        assert_eq!(count_rows(&connection, "settings").unwrap(), 7);
+        assert_eq!(count_rows(&connection, "settings").unwrap(), 9);
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
         assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
@@ -2157,5 +2590,14 @@ mod tests {
 
         assert_eq!(reminder.note_title, "提醒便签");
         assert!(DateTime::parse_from_rfc3339(&next_time).unwrap().with_timezone(&Utc) > now);
+    }
+
+    #[test]
+    fn password_hash_accepts_only_matching_password() {
+        let hash = hash_password("secret123").expect("hash password");
+
+        assert!(verify_password_hash(&hash, "secret123").expect("verify password"));
+        assert!(!verify_password_hash(&hash, "wrong123").expect("reject password"));
+        assert!(hash_password("123").is_err());
     }
 }

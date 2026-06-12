@@ -3,12 +3,14 @@ mod storage;
 use serde::Deserialize;
 use std::process::Command;
 use storage::{
-    AttachmentIdRequest, AttachmentRecord, CreateAttachmentRequest, CreateFolderRequest,
-    CreateNoteRequest, CreateReminderRequest, FolderRecord, ListNotesRequest,
-    ListRemindersRequest, NoteIdRequest, NoteRecord, RecycleItemRecord, ReminderIdRequest,
-    ReminderRecord, SaveStickyBoundsRequest, SetNotePinnedRequest, SetSettingRequest,
-    SetStickyAlwaysOnTopRequest, SettingRecord, StickyWindowRecord, StorageStatus,
-    UpdateNoteRequest, UpdateReminderRequest,
+    AttachmentIdRequest, AttachmentRecord, BackupRecord, ChangePasswordRequest,
+    CreateAttachmentRequest, CreateFolderRequest, CreateNoteRequest, CreateReminderRequest,
+    DisablePasswordRequest, FolderRecord, ListNotesRequest, ListRemindersRequest, NoteIdRequest,
+    NoteRecord, RecycleItemRecord, ReminderIdRequest, ReminderRecord, RestoreBackupRequest,
+    SaveStickyBoundsRequest, SecurityState, SetAutoLockMinutesRequest, SetNotePinnedRequest,
+    SetSettingRequest, SetStickyAlwaysOnTopRequest, SettingRecord, SetupPasswordRequest,
+    StickyWindowRecord, StorageStatus, UpdateNoteRequest, UpdateReminderRequest,
+    VerifyPasswordRequest,
 };
 use tauri::{
     menu::MenuBuilder,
@@ -228,6 +230,61 @@ fn list_due_reminders() -> Result<Vec<ReminderRecord>, String> {
 #[tauri::command]
 fn complete_reminder(request: ReminderIdRequest) -> Result<ReminderRecord, String> {
     storage::complete_reminder(request)
+}
+
+#[tauri::command]
+fn close_sticky_windows_for_lock(app: AppHandle) -> Result<(), String> {
+    close_sticky_windows(&app)
+}
+
+#[tauri::command]
+fn restore_sticky_windows_after_unlock(app: AppHandle) -> Result<(), String> {
+    restore_posted_sticky_windows(&app)
+}
+
+#[tauri::command]
+fn get_security_state() -> Result<SecurityState, String> {
+    storage::get_security_state()
+}
+
+#[tauri::command]
+fn setup_password(request: SetupPasswordRequest) -> Result<SecurityState, String> {
+    storage::setup_password(request)
+}
+
+#[tauri::command]
+fn verify_password(request: VerifyPasswordRequest) -> Result<bool, String> {
+    storage::verify_password(request)
+}
+
+#[tauri::command]
+fn change_password(request: ChangePasswordRequest) -> Result<SecurityState, String> {
+    storage::change_password(request)
+}
+
+#[tauri::command]
+fn disable_password(request: DisablePasswordRequest) -> Result<SecurityState, String> {
+    storage::disable_password(request)
+}
+
+#[tauri::command]
+fn set_auto_lock_minutes(request: SetAutoLockMinutesRequest) -> Result<SecurityState, String> {
+    storage::set_auto_lock_minutes(request)
+}
+
+#[tauri::command]
+fn create_backup() -> Result<BackupRecord, String> {
+    storage::create_backup()
+}
+
+#[tauri::command]
+fn list_backups() -> Result<Vec<BackupRecord>, String> {
+    storage::list_backups()
+}
+
+#[tauri::command]
+fn restore_backup(request: RestoreBackupRequest) -> Result<StorageStatus, String> {
+    storage::restore_backup(request)
 }
 
 #[tauri::command]
@@ -626,7 +683,17 @@ fn persist_sticky_window_bounds(window: &WebviewWindow, note_id: &str) {
     });
 }
 
-fn restore_sticky_windows(app: &AppHandle) -> Result<(), String> {
+fn close_sticky_windows(app: &AppHandle) -> Result<(), String> {
+    for record in storage::list_sticky_windows()? {
+        if let Some(window) = app.get_webview_window(&sticky_window_label(&record.note_id)) {
+            window.destroy().map_err(|error| error.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
+fn restore_posted_sticky_windows(app: &AppHandle) -> Result<(), String> {
     for record in storage::list_sticky_windows()? {
         let restored_record = storage::force_sticky_always_on_top(&record.note_id)?;
         open_sticky_window(app, &restored_record, true)?;
@@ -643,11 +710,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             storage::init_storage().map_err(setup_error)?;
             setup_main_window_events(app.handle());
             setup_tray(app.handle()).map_err(setup_error)?;
-            restore_sticky_windows(app.handle()).map_err(setup_error)?;
+            if !storage::get_security_state()
+                .map_err(setup_error)?
+                .lock_enabled
+            {
+                restore_posted_sticky_windows(app.handle()).map_err(setup_error)?;
+            }
             apply_startup_behavior(app.handle()).map_err(setup_error)?;
             Ok(())
         })
@@ -684,6 +757,17 @@ pub fn run() {
             list_reminders,
             list_due_reminders,
             complete_reminder,
+            close_sticky_windows_for_lock,
+            restore_sticky_windows_after_unlock,
+            get_security_state,
+            setup_password,
+            verify_password,
+            change_password,
+            disable_password,
+            set_auto_lock_minutes,
+            create_backup,
+            list_backups,
+            restore_backup,
             post_sticky_note,
             unpost_sticky_note,
             get_sticky_window,

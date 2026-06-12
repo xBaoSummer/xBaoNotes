@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
@@ -108,6 +109,18 @@ type ReminderRecord = {
   updated_at: string;
 };
 
+type SecurityState = {
+  lock_enabled: boolean;
+  auto_lock_minutes: number;
+};
+
+type BackupRecord = {
+  name: string;
+  path: string;
+  created_at: string;
+  size: number;
+};
+
 type SettingRecord = {
   key: string;
   value: string;
@@ -130,6 +143,14 @@ type ReminderDraft = {
   remind_at: string;
   repeat_rule: RepeatRule;
   custom_interval_days: number;
+};
+
+type SecurityForm = {
+  unlockPassword: string;
+  newPassword: string;
+  currentPassword: string;
+  changedPassword: string;
+  disablePassword: string;
 };
 
 const noteTypes: Array<{ id: NoteType; label: string }> = [
@@ -256,6 +277,17 @@ function MainApp() {
   const [reminderDraft, setReminderDraft] = useState<ReminderDraft | null>(null);
   const [settings, setSettings] = useState<SettingRecord[]>([]);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
+  const [securityState, setSecurityState] = useState<SecurityState | null>(null);
+  const [isUnlocked, setIsUnlocked] = useState(true);
+  const [securityForm, setSecurityForm] = useState<SecurityForm>({
+    unlockPassword: "",
+    newPassword: "",
+    currentPassword: "",
+    changedPassword: "",
+    disablePassword: "",
+  });
+  const [backupRecords, setBackupRecords] = useState<BackupRecord[]>([]);
+  const [selectedRestorePath, setSelectedRestorePath] = useState("");
   const [pendingImageAttachments, setPendingImageAttachments] = useState<AttachmentRecord[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
@@ -265,6 +297,8 @@ function MainApp() {
   const [folderName, setFolderName] = useState("");
   const [isRecycleView, setIsRecycleView] = useState(false);
   const isProcessingReminders = useRef(false);
+  const securityInitialized = useRef(false);
+  const lastActivityAt = useRef(Date.now());
 
   const resolvedTheme = resolveTheme(themeMode);
   document.documentElement.dataset.theme = resolvedTheme;
@@ -359,6 +393,41 @@ function MainApp() {
   }, [selectedNoteId]);
 
   useEffect(() => {
+    if (!securityState?.lock_enabled || !isUnlocked) {
+      return;
+    }
+
+    const markActivity = () => {
+      lastActivityAt.current = Date.now();
+    };
+
+    window.addEventListener("keydown", markActivity);
+    window.addEventListener("pointerdown", markActivity);
+    window.addEventListener("wheel", markActivity);
+
+    return () => {
+      window.removeEventListener("keydown", markActivity);
+      window.removeEventListener("pointerdown", markActivity);
+      window.removeEventListener("wheel", markActivity);
+    };
+  }, [securityState?.lock_enabled, isUnlocked]);
+
+  useEffect(() => {
+    if (!securityState?.lock_enabled || !isUnlocked || securityState.auto_lock_minutes <= 0) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const idleFor = Date.now() - lastActivityAt.current;
+      if (idleFor >= securityState.auto_lock_minutes * 60 * 1000) {
+        void lockApplication();
+      }
+    }, 15000);
+
+    return () => window.clearInterval(timer);
+  }, [securityState?.lock_enabled, securityState?.auto_lock_minutes, isUnlocked]);
+
+  useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
@@ -406,7 +475,16 @@ function MainApp() {
       const folderId = activeFolderId === "all" ? undefined : activeFolderId;
       const titleQuery = query.trim() || undefined;
       const status = await invoke<StorageStatus>("initialize_storage");
-      const [folderList, noteList, recycleList, stickyList, settingList, autoStartState] = await Promise.all([
+      const [
+        folderList,
+        noteList,
+        recycleList,
+        stickyList,
+        settingList,
+        autoStartState,
+        nextSecurityState,
+        backupList,
+      ] = await Promise.all([
         invoke<FolderRecord[]>("list_folders"),
         invoke<NoteRecord[]>("list_notes", {
           request: {
@@ -419,6 +497,8 @@ function MainApp() {
         invoke<StickyWindowRecord[]>("list_sticky_windows"),
         invoke<SettingRecord[]>("list_settings"),
         invoke<boolean>("get_auto_start_enabled"),
+        invoke<SecurityState>("get_security_state"),
+        invoke<BackupRecord[]>("list_backups"),
       ]);
 
       setStorageStatus(status);
@@ -428,6 +508,13 @@ function MainApp() {
       setStickyWindows(stickyList);
       setSettings(settingList);
       setAutoStartEnabled(autoStartState);
+      setSecurityState(nextSecurityState);
+      setBackupRecords(backupList);
+
+      if (!securityInitialized.current) {
+        securityInitialized.current = true;
+        setIsUnlocked(!nextSecurityState.lock_enabled);
+      }
 
       if (!options.keepSelection) {
         setSelectedNoteId((currentId) => {
@@ -777,6 +864,212 @@ function MainApp() {
     }
   }
 
+  async function handleUnlock() {
+    try {
+      const verified = await invoke<boolean>("verify_password", {
+        request: { password: securityForm.unlockPassword },
+      });
+
+      if (!verified) {
+        setStorageError("密码不正确");
+        return;
+      }
+
+      let restoreMessage: string | null = null;
+      try {
+        await invoke("restore_sticky_windows_after_unlock");
+      } catch (restoreError) {
+        restoreMessage = restoreError instanceof Error ? restoreError.message : String(restoreError);
+      }
+      setIsUnlocked(true);
+      lastActivityAt.current = Date.now();
+      setSecurityForm((current) => ({ ...current, unlockPassword: "" }));
+      setStorageError(restoreMessage);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function lockApplication() {
+    try {
+      await invoke("close_sticky_windows_for_lock");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsUnlocked(false);
+      setSecurityForm((current) => ({ ...current, unlockPassword: "" }));
+    }
+  }
+
+  async function handleSetupPassword() {
+    setIsBusy(true);
+    try {
+      const nextSecurityState = await invoke<SecurityState>("setup_password", {
+        request: {
+          password: securityForm.newPassword,
+          auto_lock_minutes: securityState?.auto_lock_minutes ?? 5,
+        },
+      });
+      setSecurityState(nextSecurityState);
+      setIsUnlocked(true);
+      lastActivityAt.current = Date.now();
+      setSecurityForm((current) => ({ ...current, newPassword: "" }));
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleChangePassword() {
+    setIsBusy(true);
+    try {
+      const nextSecurityState = await invoke<SecurityState>("change_password", {
+        request: {
+          current_password: securityForm.currentPassword,
+          new_password: securityForm.changedPassword,
+        },
+      });
+      setSecurityState(nextSecurityState);
+      setSecurityForm((current) => ({
+        ...current,
+        currentPassword: "",
+        changedPassword: "",
+      }));
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleDisablePassword() {
+    const confirmed = window.confirm("确定关闭密码锁吗？关闭后打开软件不再需要输入密码。");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const nextSecurityState = await invoke<SecurityState>("disable_password", {
+        request: { password: securityForm.disablePassword },
+      });
+      setSecurityState(nextSecurityState);
+      setIsUnlocked(true);
+      setSecurityForm((current) => ({ ...current, disablePassword: "" }));
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleSetAutoLockMinutes(minutes: number) {
+    try {
+      const nextSecurityState = await invoke<SecurityState>("set_auto_lock_minutes", {
+        request: { minutes },
+      });
+      setSecurityState(nextSecurityState);
+      lastActivityAt.current = Date.now();
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function handleLockNow() {
+    if (!securityState?.lock_enabled) {
+      return;
+    }
+
+    void lockApplication();
+  }
+
+  async function handleSelectBackupDir() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择备份保存目录",
+        defaultPath: settingMap.get("backup_dir") ?? storageStatus?.paths.backup_dir,
+      });
+
+      if (typeof selected !== "string") {
+        return;
+      }
+
+      await invoke<SettingRecord>("set_setting", {
+        request: {
+          key: "backup_dir",
+          value: selected,
+        },
+      });
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleCreateBackup() {
+    setIsBusy(true);
+    try {
+      await invoke<BackupRecord>("create_backup");
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleSelectRestoreBackup() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择要恢复的备份目录",
+        defaultPath: settingMap.get("backup_dir") ?? storageStatus?.paths.backup_dir,
+      });
+
+      if (typeof selected === "string") {
+        setSelectedRestorePath(selected);
+      }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleRestoreBackup() {
+    if (!selectedRestorePath) {
+      setStorageError("请先选择要恢复的备份目录");
+      return;
+    }
+
+    const confirmed = window.confirm("恢复备份会覆盖当前数据。软件会先自动备份当前数据，确认继续吗？");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke<StorageStatus>("restore_backup", {
+        request: { backup_path: selectedRestorePath },
+      });
+      setSelectedRestorePath("");
+      setSelectedNoteId(null);
+      await refreshStorage();
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function handleDeleteNote() {
     if (!editorState) {
       return;
@@ -915,6 +1208,20 @@ function MainApp() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  if (securityState?.lock_enabled && !isUnlocked) {
+    return (
+      <LockScreen
+        error={storageError}
+        isBusy={isBusy}
+        onPasswordChange={(value) =>
+          setSecurityForm((current) => ({ ...current, unlockPassword: value }))
+        }
+        onUnlock={handleUnlock}
+        password={securityForm.unlockPassword}
+      />
+    );
   }
 
   return (
@@ -1246,6 +1553,29 @@ function MainApp() {
               </label>
             </div>
 
+            <SecurityPanel
+              form={securityForm}
+              isBusy={isBusy}
+              onChangeAutoLock={handleSetAutoLockMinutes}
+              onChangeForm={setSecurityForm}
+              onChangePassword={handleChangePassword}
+              onDisablePassword={handleDisablePassword}
+              onLockNow={handleLockNow}
+              onSetupPassword={handleSetupPassword}
+              securityState={securityState}
+            />
+
+            <BackupPanel
+              backupDir={settingMap.get("backup_dir") ?? storageStatus?.paths.backup_dir ?? ""}
+              backups={backupRecords}
+              isBusy={isBusy}
+              onCreateBackup={handleCreateBackup}
+              onRestoreBackup={handleRestoreBackup}
+              onSelectBackupDir={handleSelectBackupDir}
+              onSelectRestoreBackup={handleSelectRestoreBackup}
+              selectedRestorePath={selectedRestorePath}
+            />
+
             <div className="status-list">
               <div>
                 <span>数据模式</span>
@@ -1541,6 +1871,230 @@ function StickyNoteWindow({ noteId }: { noteId: string }) {
 
       {storageError ? <p className="error-text sticky-error">{storageError}</p> : null}
     </main>
+  );
+}
+
+function LockScreen({
+  error,
+  isBusy,
+  onPasswordChange,
+  onUnlock,
+  password,
+}: {
+  error: string | null;
+  isBusy: boolean;
+  onPasswordChange: (value: string) => void;
+  onUnlock: () => void;
+  password: string;
+}) {
+  return (
+    <main className="lock-shell">
+      <form
+        className="lock-panel"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onUnlock();
+        }}
+      >
+        <div className="app-mark">XB</div>
+        <div>
+          <h1>xBaoNotes 已锁定</h1>
+          <p>输入密码后继续使用本地便签。</p>
+        </div>
+        <input
+          autoFocus
+          onChange={(event) => onPasswordChange(event.target.value)}
+          placeholder="输入密码"
+          type="password"
+          value={password}
+        />
+        <button className="primary-action full-width" disabled={isBusy} type="submit">
+          解锁
+        </button>
+        {error ? <p className="error-text">{error}</p> : null}
+      </form>
+    </main>
+  );
+}
+
+function SecurityPanel({
+  form,
+  isBusy,
+  onChangeAutoLock,
+  onChangeForm,
+  onChangePassword,
+  onDisablePassword,
+  onLockNow,
+  onSetupPassword,
+  securityState,
+}: {
+  form: SecurityForm;
+  isBusy: boolean;
+  onChangeAutoLock: (minutes: number) => void;
+  onChangeForm: Dispatch<SetStateAction<SecurityForm>>;
+  onChangePassword: () => void;
+  onDisablePassword: () => void;
+  onLockNow: () => void;
+  onSetupPassword: () => void;
+  securityState: SecurityState | null;
+}) {
+  const lockEnabled = Boolean(securityState?.lock_enabled);
+  const autoLockMinutes = securityState?.auto_lock_minutes ?? 5;
+
+  return (
+    <section className="settings-block">
+      <div className="panel-heading compact-heading">
+        <h3>密码锁</h3>
+        <span>{lockEnabled ? "已开启" : "未开启"}</span>
+      </div>
+
+      <div className="setting-row">
+        <span>自动锁定</span>
+        <select
+          className="setting-select"
+          onChange={(event) => void onChangeAutoLock(Number(event.target.value))}
+          value={autoLockMinutes}
+        >
+          <option value={0}>不自动锁定</option>
+          <option value={1}>1 分钟</option>
+          <option value={5}>5 分钟</option>
+          <option value={15}>15 分钟</option>
+          <option value={30}>30 分钟</option>
+          <option value={60}>60 分钟</option>
+        </select>
+      </div>
+
+      {!lockEnabled ? (
+        <div className="setting-row">
+          <span>设置访问密码</span>
+          <input
+            onChange={(event) =>
+              onChangeForm((current) => ({ ...current, newPassword: event.target.value }))
+            }
+            placeholder="至少 6 个字符"
+            type="password"
+            value={form.newPassword}
+          />
+          <button className="primary-action full-width" disabled={isBusy} onClick={onSetupPassword} type="button">
+            开启密码锁
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="setting-row">
+            <span>修改密码</span>
+            <input
+              onChange={(event) =>
+                onChangeForm((current) => ({ ...current, currentPassword: event.target.value }))
+              }
+              placeholder="当前密码"
+              type="password"
+              value={form.currentPassword}
+            />
+            <input
+              onChange={(event) =>
+                onChangeForm((current) => ({ ...current, changedPassword: event.target.value }))
+              }
+              placeholder="新密码"
+              type="password"
+              value={form.changedPassword}
+            />
+            <button className="primary-action full-width" disabled={isBusy} onClick={onChangePassword} type="button">
+              修改密码
+            </button>
+          </div>
+
+          <div className="setting-row">
+            <span>关闭密码锁</span>
+            <input
+              onChange={(event) =>
+                onChangeForm((current) => ({ ...current, disablePassword: event.target.value }))
+              }
+              placeholder="输入当前密码"
+              type="password"
+              value={form.disablePassword}
+            />
+            <div className="split-actions">
+              <button className="ghost-action" disabled={isBusy} onClick={onLockNow} type="button">
+                立即锁定
+              </button>
+              <button className="danger-action" disabled={isBusy} onClick={onDisablePassword} type="button">
+                关闭密码锁
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function BackupPanel({
+  backupDir,
+  backups,
+  isBusy,
+  onCreateBackup,
+  onRestoreBackup,
+  onSelectBackupDir,
+  onSelectRestoreBackup,
+  selectedRestorePath,
+}: {
+  backupDir: string;
+  backups: BackupRecord[];
+  isBusy: boolean;
+  onCreateBackup: () => void;
+  onRestoreBackup: () => void;
+  onSelectBackupDir: () => void;
+  onSelectRestoreBackup: () => void;
+  selectedRestorePath: string;
+}) {
+  return (
+    <section className="settings-block">
+      <div className="panel-heading compact-heading">
+        <h3>备份恢复</h3>
+        <span>{backups.length} 份</span>
+      </div>
+
+      <div className="setting-row">
+        <span>备份保存目录</span>
+        <code className="path-code">{backupDir || "未设置"}</code>
+        <div className="split-actions">
+          <button className="ghost-action" disabled={isBusy} onClick={onSelectBackupDir} type="button">
+            选择目录
+          </button>
+          <button className="primary-action" disabled={isBusy} onClick={onCreateBackup} type="button">
+            立即备份
+          </button>
+        </div>
+      </div>
+
+      <div className="setting-row">
+        <span>从备份恢复</span>
+        <code className="path-code">{selectedRestorePath || "请选择备份目录"}</code>
+        <div className="split-actions">
+          <button className="ghost-action" disabled={isBusy} onClick={onSelectRestoreBackup} type="button">
+            选择备份
+          </button>
+          <button className="danger-action" disabled={isBusy || !selectedRestorePath} onClick={onRestoreBackup} type="button">
+            恢复
+          </button>
+        </div>
+      </div>
+
+      <div className="backup-list">
+        {backups.length === 0 ? (
+          <div className="attachment-empty">暂无备份</div>
+        ) : null}
+
+        {backups.slice(0, 5).map((backup) => (
+          <article className="backup-card" key={backup.path}>
+            <strong>{backup.name}</strong>
+            <span>{formatDate(backup.created_at)} · {formatFileSize(backup.size)}</span>
+            <code>{backup.path}</code>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
