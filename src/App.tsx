@@ -1,16 +1,43 @@
-import { useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useState } from "react";
 
 type NoteType = "all" | "normal" | "todo" | "timeline" | "rich";
 type ThemeMode = "light" | "dark" | "system";
 
-type NotePreview = {
-  id: number;
-  type: Exclude<NoteType, "all">;
+type AppPaths = {
+  root_dir: string;
+  data_dir: string;
+  attachments_dir: string;
+  backup_dir: string;
+  recycle_bin_dir: string;
+  database_path: string;
+};
+
+type StorageStatus = {
+  paths: AppPaths;
+  folder_count: number;
+  note_count: number;
+  settings_count: number;
+};
+
+type FolderRecord = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type NoteRecord = {
+  id: string;
+  note_type: "normal" | "todo" | "timeline" | "rich_text";
   title: string;
-  folder: string;
-  updatedAt: string;
-  pinned?: boolean;
-  summary: string;
+  content: string;
+  folder_id: string;
+  is_pinned: boolean;
+  is_deleted: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
 };
 
 const noteTypes: Array<{ id: NoteType; label: string }> = [
@@ -27,47 +54,11 @@ const themeModes: Array<{ id: ThemeMode; label: string }> = [
   { id: "system", label: "跟随系统" },
 ];
 
-const previews: NotePreview[] = [
-  {
-    id: 1,
-    type: "todo",
-    title: "今天要处理的任务",
-    folder: "工作",
-    updatedAt: "09:42",
-    pinned: true,
-    summary: "确认 Phase 1 骨架、主题切换和主窗口启动。",
-  },
-  {
-    id: 2,
-    type: "timeline",
-    title: "项目启动记录",
-    folder: "项目日志",
-    updatedAt: "昨天",
-    summary: "记录 xBaoNotes 的第一版目标和后续阶段。",
-  },
-  {
-    id: 3,
-    type: "normal",
-    title: "临时想法",
-    folder: "默认文件夹",
-    updatedAt: "周三",
-    summary: "贴边入口默认显示，主页面按需打开。",
-  },
-  {
-    id: 4,
-    type: "rich",
-    title: "富文本能力清单",
-    folder: "设计",
-    updatedAt: "6月12日",
-    summary: "标题、列表、图片、附件、完整表格能力。",
-  },
-];
-
-const typeLabels: Record<Exclude<NoteType, "all">, string> = {
+const typeLabels: Record<NoteRecord["note_type"], string> = {
   normal: "普通便签",
   todo: "待办",
   timeline: "时间轴",
-  rich: "富文本",
+  rich_text: "富文本",
 };
 
 function resolveTheme(theme: ThemeMode) {
@@ -86,17 +77,71 @@ export default function App() {
   const [activeType, setActiveType] = useState<NoteType>("all");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [query, setQuery] = useState("");
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
+  const [notes, setNotes] = useState<NoteRecord[]>([]);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
 
   const resolvedTheme = resolveTheme(themeMode);
   document.documentElement.dataset.theme = resolvedTheme;
 
+  useEffect(() => {
+    void refreshStorage();
+  }, []);
+
   const filteredNotes = useMemo(() => {
-    return previews.filter((note) => {
-      const matchesType = activeType === "all" || note.type === activeType;
+    return notes.filter((note) => {
+      const matchesType = activeType === "all" || toUiNoteType(note.note_type) === activeType;
       const matchesQuery = note.title.toLowerCase().includes(query.trim().toLowerCase());
       return matchesType && matchesQuery;
     });
-  }, [activeType, query]);
+  }, [activeType, notes, query]);
+
+  async function refreshStorage() {
+    try {
+      setStorageError(null);
+      const [status, folderList, noteList] = await Promise.all([
+        invoke<StorageStatus>("initialize_storage"),
+        invoke<FolderRecord[]>("list_folders"),
+        invoke<NoteRecord[]>("list_notes"),
+      ]);
+
+      setStorageStatus(status);
+      setFolders(folderList);
+      setNotes(noteList);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleCreateNote() {
+    setIsCreating(true);
+    try {
+      const createdAt = new Date().toLocaleString("zh-CN", {
+        hour12: false,
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      await invoke<NoteRecord>("create_note", {
+        request: {
+          note_type: activeType === "all" ? "normal" : toStorageNoteType(activeType),
+          title: `新便签 ${createdAt}`,
+          content: "这条便签已保存到本地 SQLite 数据库。",
+          folder_id: folders[0]?.id,
+        },
+      });
+
+      await refreshStorage();
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsCreating(false);
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -129,7 +174,9 @@ export default function App() {
             <p className="eyebrow">Phase 1</p>
             <h2>便签工作台</h2>
           </div>
-          <button className="primary-action" type="button">新建便签</button>
+          <button className="primary-action" disabled={isCreating} onClick={handleCreateNote} type="button">
+            {isCreating ? "保存中" : "新建便签"}
+          </button>
         </header>
 
         <div className="toolbar" aria-label="工具栏">
@@ -164,17 +211,24 @@ export default function App() {
             </div>
 
             <div className="note-list">
+              {filteredNotes.length === 0 ? (
+                <div className="empty-state">
+                  <strong>暂无便签</strong>
+                  <span>点击“新建便签”会写入本地 SQLite 数据库。</span>
+                </div>
+              ) : null}
+
               {filteredNotes.map((note) => (
                 <article className="note-card" key={note.id}>
                   <div className="note-card-header">
-                    <span className="type-pill">{typeLabels[note.type]}</span>
-                    {note.pinned ? <span className="pin-label">置顶</span> : null}
+                    <span className="type-pill">{typeLabels[note.note_type]}</span>
+                    {note.is_pinned ? <span className="pin-label">置顶</span> : null}
                   </div>
                   <h4>{note.title}</h4>
-                  <p>{note.summary}</p>
+                  <p>{note.content || "暂无内容"}</p>
                   <footer>
-                    <span>{note.folder}</span>
-                    <span>{note.updatedAt}</span>
+                    <span>{resolveFolderName(folders, note.folder_id)}</span>
+                    <span>{formatDate(note.updated_at)}</span>
                   </footer>
                 </article>
               ))}
@@ -205,16 +259,60 @@ export default function App() {
               </div>
               <div>
                 <span>数据模式</span>
-                <strong>本地保存</strong>
+                <strong>{storageStatus ? "SQLite 已初始化" : "初始化中"}</strong>
               </div>
               <div>
                 <span>技术底座</span>
                 <strong>Tauri 2</strong>
               </div>
+              <div>
+                <span>文件夹</span>
+                <strong>{storageStatus?.folder_count ?? 0}</strong>
+              </div>
+              <div>
+                <span>便签</span>
+                <strong>{storageStatus?.note_count ?? 0}</strong>
+              </div>
+            </div>
+
+            <div className="storage-panel">
+              <h4>本地数据目录</h4>
+              <code>{storageStatus?.paths.root_dir ?? "正在创建..."}</code>
+              <h4>数据库</h4>
+              <code>{storageStatus?.paths.database_path ?? "正在初始化..."}</code>
+              {storageError ? <p className="error-text">{storageError}</p> : null}
             </div>
           </aside>
         </section>
       </section>
     </main>
   );
+}
+
+function toUiNoteType(noteType: NoteRecord["note_type"]): NoteType {
+  return noteType === "rich_text" ? "rich" : noteType;
+}
+
+function toStorageNoteType(noteType: NoteType) {
+  return noteType === "rich" ? "rich_text" : noteType;
+}
+
+function resolveFolderName(folders: FolderRecord[], folderId: string) {
+  return folders.find((folder) => folder.id === folderId)?.name ?? "未分类";
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("zh-CN", {
+    hour12: false,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

@@ -99,6 +99,19 @@ Documents\xBaoNotes\Recycle Bin
 - `settings`：软件设置。
 - `recycle_items`：回收站记录。
 
+Phase 2 已实现基础表：
+
+- `settings`
+- `folders`
+- `notes`
+
+后续阶段再扩展：
+
+- `attachments`
+- `reminders`
+- `sticky_windows`
+- `recycle_items`
+
 `notes` 至少包含：
 
 - `id`

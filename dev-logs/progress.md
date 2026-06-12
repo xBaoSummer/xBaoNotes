@@ -158,3 +158,58 @@
 ### Risks
 
 - 后续推送因网络连接 GitHub 失败暂未完成：`Failed to connect to github.com port 443`。
+
+## 2026-06-12 Phase 2 本地数据层基础
+
+### Completed
+
+- 新增 Rust `storage` 模块。
+- 引入 `rusqlite`，使用 Rust 后端直接管理 SQLite。
+- 默认创建本地数据目录：
+  - `Documents\xBaoNotes\Data`
+  - `Documents\xBaoNotes\Attachments`
+  - `Documents\xBaoNotes\Backup`
+  - `Documents\xBaoNotes\Recycle Bin`
+- 初始化 SQLite 数据库：`Documents\xBaoNotes\Data\xbao-notes.sqlite3`。
+- 创建基础表：`settings`、`folders`、`notes`。
+- 写入默认设置：主题模式、启动模式、备份路径、回收站路径。
+- 写入默认文件夹：`默认文件夹`。
+- 新增 Tauri 命令：
+  - `initialize_storage`
+  - `get_storage_status`
+  - `list_folders`
+  - `create_folder`
+  - `create_note`
+  - `list_notes`
+  - `list_settings`
+  - `set_setting`
+- 前端启动时自动初始化本地数据层。
+- 前端显示本地数据目录、数据库路径、文件夹数量和便签数量。
+- “新建便签”按钮已接入真实 SQLite 写入。
+- 新增 Rust 单元测试验证 schema、默认设置和默认文件夹。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，1 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- Release 程序已启动并正常关闭。
+- 已确认生成默认数据目录和 SQLite 数据库文件。
+
+### Risks
+
+- 当前只是数据层基础闭环，还没有完整编辑、重命名、删除、回收站恢复等主页面管理能力。
+- 本机没有 `sqlite3` 命令行工具，数据库表验证通过 Rust 单元测试完成。

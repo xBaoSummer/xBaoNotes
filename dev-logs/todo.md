@@ -2,16 +2,17 @@
 
 ## Current Phase
 
-Phase 2：本地数据层。
+Phase 3：主页面基础管理。
 
 ## Next Tasks
 
 - 网络恢复后重试：`git push origin main`。
-- 设计 SQLite 数据库初始化流程。
-- 创建默认数据目录：`Documents\xBaoNotes\Data`、`Attachments`、`Backup`、`Recycle Bin`。
-- 实现设置读取和保存。
-- 实现文件夹表和便签表的基础数据访问。
-- 验证新建数据后重启应用仍然存在。
+- 实现真实便签编辑保存。
+- 实现便签重命名。
+- 实现便签置顶。
+- 实现标题搜索走 SQLite 查询，而不是前端过滤。
+- 实现文件夹创建、选择和按文件夹筛选。
+- 为删除进入回收站预留 Phase 4 接口，当前不做硬删除。
 
 ## Backlog
 
@@ -28,7 +29,7 @@ Phase 2：本地数据层。
 
 ## Pending Confirmation
 
-- 是否继续按计划推进 Phase 2：本地数据层。
+- 是否继续按计划推进 Phase 3：主页面基础管理。
 
 ## Deferred
 
