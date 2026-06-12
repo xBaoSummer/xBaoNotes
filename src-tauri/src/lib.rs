@@ -1,9 +1,10 @@
 mod storage;
 
 use storage::{
-    CreateFolderRequest, CreateNoteRequest, FolderRecord, ListNotesRequest, NoteRecord,
-    NoteIdRequest, RecycleItemRecord, SetNotePinnedRequest, SetSettingRequest, SettingRecord,
-    StorageStatus, UpdateNoteRequest,
+    AttachmentIdRequest, AttachmentRecord, CreateAttachmentRequest, CreateFolderRequest,
+    CreateNoteRequest, FolderRecord, ListNotesRequest, NoteRecord, NoteIdRequest,
+    RecycleItemRecord, SetNotePinnedRequest, SetSettingRequest, SettingRecord, StorageStatus,
+    UpdateNoteRequest,
 };
 
 #[tauri::command]
@@ -77,6 +78,21 @@ fn empty_recycle_bin() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn create_attachment(request: CreateAttachmentRequest) -> Result<AttachmentRecord, String> {
+    storage::create_attachment(request)
+}
+
+#[tauri::command]
+fn list_attachments(request: NoteIdRequest) -> Result<Vec<AttachmentRecord>, String> {
+    storage::list_attachments(request)
+}
+
+#[tauri::command]
+fn open_attachment(request: AttachmentIdRequest) -> Result<(), String> {
+    storage::open_attachment(request)
+}
+
+#[tauri::command]
 fn list_settings() -> Result<Vec<SettingRecord>, String> {
     storage::list_settings()
 }
@@ -104,6 +120,9 @@ pub fn run() {
             restore_note,
             purge_note,
             empty_recycle_bin,
+            create_attachment,
+            list_attachments,
+            open_attachment,
             list_settings,
             set_setting
         ])

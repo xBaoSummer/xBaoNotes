@@ -292,3 +292,55 @@
 ### Risks
 
 - 当前回收站只处理便签本体；附件功能将在 Phase 5 接入，届时需要补充附件随便签恢复/彻底删除的处理。
+
+## 2026-06-12 Phase 5 富文本、图片和附件
+
+### Completed
+
+- 安装 TipTap / ProseMirror 富文本相关依赖。
+- 接入富文本编辑器，替换原普通文本框。
+- 新增富文本工具栏：
+  - 标题/正文
+  - 加粗、斜体、下划线
+  - 文字颜色、高亮
+  - 有序列表、无序列表
+  - 表格插入、增行、增列、删除表格
+- 新增 `attachments` SQLite 表。
+- 新增附件复制逻辑，拖入文件后复制到 `Documents\xBaoNotes\Attachments\<note_id>`。
+- 新增附件列表读取和系统默认程序打开附件能力。
+- 新增图片附件预览，Tauri `asset` 协议范围限制到附件目录。
+- 前端新增附件面板，支持图片缩略图和普通附件卡片。
+- 删除便签进入回收站时保留附件关联，恢复后附件仍可读取。
+- 彻底删除便签和清空回收站时清理关联附件文件。
+- 新增附件关系单元测试。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `package.json`
+- `package-lock.json`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/tauri.conf.json`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，4 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+
+### Risks
+
+- Phase 5 已实现富文本和附件基础闭环，但尚未做富文本懒加载；当前构建会提示前端 chunk 超过 500 kB。
+- 拖入附件会立即复制到软件附件目录；正文 HTML 仍需用户点击“保存”写入数据库。
+- 还未做桌面贴出窗口，计划进入 Phase 6。

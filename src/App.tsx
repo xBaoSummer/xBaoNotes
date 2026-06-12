@@ -1,4 +1,16 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import Color from "@tiptap/extension-color";
+import Highlight from "@tiptap/extension-highlight";
+import Image from "@tiptap/extension-image";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Underline from "@tiptap/extension-underline";
+import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useMemo, useState } from "react";
 
 type NoteType = "all" | "normal" | "todo" | "timeline" | "rich";
@@ -49,6 +61,18 @@ type RecycleItemRecord = {
   title_snapshot: string;
 };
 
+type AttachmentRecord = {
+  id: string;
+  note_id: string;
+  original_name: string;
+  stored_name: string;
+  stored_path: string;
+  mime_type: string;
+  size: number;
+  kind: "image" | "file";
+  created_at: string;
+};
+
 type EditorState = {
   id: string;
   note_type: StorageNoteType;
@@ -86,6 +110,30 @@ const typeLabels: Record<StorageNoteType, string> = {
   rich_text: "富文本",
 };
 
+const editorExtensions = [
+  StarterKit.configure({
+    underline: false,
+  }),
+  Underline,
+  TextStyle,
+  Color,
+  Highlight.configure({
+    multicolor: true,
+  }),
+  Image.configure({
+    allowBase64: false,
+    HTMLAttributes: {
+      class: "note-image",
+    },
+  }),
+  Table.configure({
+    resizable: true,
+  }),
+  TableRow,
+  TableHeader,
+  TableCell,
+];
+
 function resolveTheme(theme: ThemeMode) {
   if (theme !== "system") {
     return theme;
@@ -107,10 +155,13 @@ export default function App() {
   const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [recycleItems, setRecycleItems] = useState<RecycleItemRecord[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [pendingImageAttachments, setPendingImageAttachments] = useState<AttachmentRecord[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [isFileDragging, setIsFileDragging] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [isRecycleView, setIsRecycleView] = useState(false);
 
@@ -129,6 +180,8 @@ export default function App() {
   useEffect(() => {
     if (!selectedNote) {
       setEditorState(null);
+      setAttachments([]);
+      setPendingImageAttachments([]);
       return;
     }
 
@@ -141,6 +194,57 @@ export default function App() {
       is_pinned: selectedNote.is_pinned,
     });
   }, [selectedNote]);
+
+  useEffect(() => {
+    if (selectedNote && !isRecycleView) {
+      void loadAttachments(selectedNote.id);
+      return;
+    }
+
+    setAttachments([]);
+    setPendingImageAttachments([]);
+  }, [selectedNote?.id, isRecycleView]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setIsFileDragging(Boolean(editorState) && !isRecycleView);
+          return;
+        }
+
+        if (event.payload.type === "leave") {
+          setIsFileDragging(false);
+          return;
+        }
+
+        if (event.payload.type === "drop") {
+          setIsFileDragging(false);
+          if (editorState && !isRecycleView) {
+            void handleAttachFiles(event.payload.paths);
+          }
+        }
+      })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+
+        unlisten = cleanup;
+      })
+      .catch((error) => {
+        setStorageError(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [editorState?.id, isRecycleView]);
 
   async function refreshStorage(options: { keepSelection?: boolean } = {}) {
     try {
@@ -180,6 +284,17 @@ export default function App() {
     }
   }
 
+  async function loadAttachments(noteId: string) {
+    try {
+      const attachmentList = await invoke<AttachmentRecord[]>("list_attachments", {
+        request: { id: noteId },
+      });
+      setAttachments(attachmentList);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function handleCreateNote() {
     if (isRecycleView) {
       setIsRecycleView(false);
@@ -199,7 +314,7 @@ export default function App() {
         request: {
           note_type: noteType,
           title: `新便签 ${createdAt}`,
-          content: "在右侧编辑内容，然后点击保存。",
+          content: defaultContentForType(noteType),
           folder_id: activeFolderId === "all" ? folders[0]?.id : activeFolderId,
         },
       });
@@ -302,11 +417,62 @@ export default function App() {
         request: { id: editorState.id },
       });
       setSelectedNoteId(null);
+      setAttachments([]);
+      setPendingImageAttachments([]);
       await refreshStorage();
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleAttachFiles(paths: string[]) {
+    if (!editorState || paths.length === 0) {
+      return;
+    }
+
+    const uniquePaths = Array.from(new Set(paths));
+    const createdAttachments: AttachmentRecord[] = [];
+    const errors: string[] = [];
+
+    setIsBusy(true);
+    try {
+      for (const sourcePath of uniquePaths) {
+        try {
+          const attachment = await invoke<AttachmentRecord>("create_attachment", {
+            request: {
+              note_id: editorState.id,
+              source_path: sourcePath,
+            },
+          });
+          createdAttachments.push(attachment);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+
+      if (createdAttachments.length > 0) {
+        await loadAttachments(editorState.id);
+        setPendingImageAttachments(createdAttachments.filter((attachment) => attachment.kind === "image"));
+        await refreshStorage({ keepSelection: true });
+      }
+
+      if (errors.length > 0) {
+        setStorageError(errors.join("；"));
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleOpenAttachment(attachmentId: string) {
+    try {
+      await invoke("open_attachment", {
+        request: { id: attachmentId },
+      });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -431,7 +597,7 @@ export default function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Phase 3</p>
+            <p className="eyebrow">Phase 5</p>
             <h2>{isRecycleView ? "回收站" : "便签工作台"}</h2>
           </div>
           {isRecycleView ? (
@@ -505,7 +671,7 @@ export default function App() {
                     {note.is_pinned ? <span className="pin-label">置顶</span> : null}
                   </div>
                   <h4>{note.title}</h4>
-                  <p>{note.content || "暂无内容"}</p>
+                  <p>{plainTextFromContent(note.content) || "暂无内容"}</p>
                   <footer>
                     <span>{resolveFolderName(folders, note.folder_id)}</span>
                     <span>{formatDate(note.updated_at)}</span>
@@ -532,9 +698,10 @@ export default function App() {
               </div>
             ) : editorState ? (
               <div className="editor-form">
-                <label>
-                  标题
+                <div className="field-block">
+                  <label htmlFor="note-title">标题</label>
                   <input
+                    id="note-title"
                     onChange={(event) =>
                       setEditorState((current) =>
                         current ? { ...current, title: event.target.value } : current,
@@ -542,51 +709,59 @@ export default function App() {
                     }
                     value={editorState.title}
                   />
-                </label>
+                </div>
 
-                <label>
-                  类型
-                  <select
-                    onChange={(event) =>
-                      setEditorState((current) =>
-                        current ? { ...current, note_type: event.target.value as StorageNoteType } : current,
-                      )
-                    }
-                    value={editorState.note_type}
-                  >
-                    {editableNoteTypes.map((item) => (
-                      <option key={item.id} value={item.id}>{item.label}</option>
-                    ))}
-                  </select>
-                </label>
+                <div className="editor-meta-grid">
+                  <div className="field-block">
+                    <label htmlFor="note-type">类型</label>
+                    <select
+                      id="note-type"
+                      onChange={(event) =>
+                        setEditorState((current) =>
+                          current ? { ...current, note_type: event.target.value as StorageNoteType } : current,
+                        )
+                      }
+                      value={editorState.note_type}
+                    >
+                      {editableNoteTypes.map((item) => (
+                        <option key={item.id} value={item.id}>{item.label}</option>
+                      ))}
+                    </select>
+                  </div>
 
-                <label>
-                  文件夹
-                  <select
-                    onChange={(event) =>
-                      setEditorState((current) =>
-                        current ? { ...current, folder_id: event.target.value } : current,
-                      )
-                    }
-                    value={editorState.folder_id}
-                  >
-                    {folders.map((folder) => (
-                      <option key={folder.id} value={folder.id}>{folder.name}</option>
-                    ))}
-                  </select>
-                </label>
+                  <div className="field-block">
+                    <label htmlFor="note-folder">文件夹</label>
+                    <select
+                      id="note-folder"
+                      onChange={(event) =>
+                        setEditorState((current) =>
+                          current ? { ...current, folder_id: event.target.value } : current,
+                        )
+                      }
+                      value={editorState.folder_id}
+                    >
+                      {folders.map((folder) => (
+                        <option key={folder.id} value={folder.id}>{folder.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
 
-                <label>
-                  内容
-                  <textarea
-                    onChange={(event) =>
-                      setEditorState((current) =>
-                        current ? { ...current, content: event.target.value } : current,
-                      )
-                    }
-                    value={editorState.content}
-                  />
-                </label>
+                <RichTextEditor
+                  attachments={attachments}
+                  disabled={isBusy}
+                  isFileDragging={isFileDragging}
+                  noteId={editorState.id}
+                  onChange={(content) =>
+                    setEditorState((current) =>
+                      current ? { ...current, content } : current,
+                    )
+                  }
+                  onOpenAttachment={handleOpenAttachment}
+                  onPendingImagesConsumed={() => setPendingImageAttachments([])}
+                  pendingImages={pendingImageAttachments}
+                  value={editorState.content}
+                />
 
                 <div className="editor-actions">
                   <button className="primary-action full-width" disabled={isBusy} onClick={handleSaveNote} type="button">
@@ -636,6 +811,10 @@ export default function App() {
                 <strong>{storageStatus?.note_count ?? 0}</strong>
               </div>
               <div>
+                <span>附件</span>
+                <strong>{attachments.length}</strong>
+              </div>
+              <div>
                 <span>回收站</span>
                 <strong>{recycleItems.length}</strong>
               </div>
@@ -650,6 +829,218 @@ export default function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function RichTextEditor({
+  attachments,
+  disabled,
+  isFileDragging,
+  noteId,
+  onChange,
+  onOpenAttachment,
+  onPendingImagesConsumed,
+  pendingImages,
+  value,
+}: {
+  attachments: AttachmentRecord[];
+  disabled: boolean;
+  isFileDragging: boolean;
+  noteId: string;
+  onChange: (content: string) => void;
+  onOpenAttachment: (attachmentId: string) => void;
+  onPendingImagesConsumed: () => void;
+  pendingImages: AttachmentRecord[];
+  value: string;
+}) {
+  const editor = useEditor(
+    {
+      extensions: editorExtensions,
+      content: normalizeEditorContent(value),
+      editable: !disabled,
+      immediatelyRender: true,
+      onUpdate: ({ editor }) => {
+        onChange(editor.getHTML());
+      },
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!editor) {
+      return;
+    }
+
+    const normalizedContent = normalizeEditorContent(value);
+    if (editor.getHTML() !== normalizedContent) {
+      editor.commands.setContent(normalizedContent, { emitUpdate: false });
+    }
+  }, [editor, noteId, value]);
+
+  useEffect(() => {
+    editor?.setEditable(!disabled);
+  }, [disabled, editor]);
+
+  useEffect(() => {
+    if (!editor || pendingImages.length === 0) {
+      return;
+    }
+
+    for (const image of pendingImages) {
+      editor
+        .chain()
+        .focus()
+        .setImage({
+          src: attachmentImageSrc(image),
+          alt: image.original_name,
+          title: image.original_name,
+        })
+        .run();
+    }
+
+    onChange(editor.getHTML());
+    onPendingImagesConsumed();
+  }, [editor, onChange, onPendingImagesConsumed, pendingImages]);
+
+  return (
+    <div className={isFileDragging ? "rich-editor drop-active" : "rich-editor"}>
+      <RichTextToolbar editor={editor} disabled={disabled} />
+      <div className="editor-surface">
+        <EditorContent editor={editor} />
+        {isFileDragging ? <div className="drop-overlay">释放以添加附件</div> : null}
+      </div>
+      <AttachmentPanel
+        attachments={attachments}
+        onOpenAttachment={onOpenAttachment}
+      />
+    </div>
+  );
+}
+
+function RichTextToolbar({
+  disabled,
+  editor,
+}: {
+  disabled: boolean;
+  editor: Editor | null;
+}) {
+  const canUseEditor = Boolean(editor) && !disabled;
+
+  return (
+    <div className="rich-toolbar" aria-label="富文本工具栏">
+      <div className="tool-group">
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()} title="标题" type="button">
+          H2
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().setParagraph().run()} title="正文" type="button">
+          ¶
+        </button>
+      </div>
+
+      <div className="tool-group">
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleBold().run()} title="加粗" type="button">
+          B
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleItalic().run()} title="斜体" type="button">
+          I
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleUnderline().run()} title="下划线" type="button">
+          U
+        </button>
+      </div>
+
+      <div className="tool-group color-group">
+        <button className="color-swatch blue" disabled={!canUseEditor} onClick={() => editor?.chain().focus().setColor("#2563eb").run()} title="蓝色文字" type="button" />
+        <button className="color-swatch red" disabled={!canUseEditor} onClick={() => editor?.chain().focus().setColor("#dc2626").run()} title="红色文字" type="button" />
+        <button className="color-swatch mark" disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fef3c7" }).run()} title="高亮" type="button" />
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().unsetColor().unsetHighlight().run()} title="清除颜色" type="button">
+          A
+        </button>
+      </div>
+
+      <div className="tool-group">
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleBulletList().run()} title="无序列表" type="button">
+          •
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().toggleOrderedList().run()} title="有序列表" type="button">
+          1.
+        </button>
+      </div>
+
+      <div className="tool-group table-tools">
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} title="插入表格" type="button">
+          表
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().addRowAfter().run()} title="下方加行" type="button">
+          +行
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().addColumnAfter().run()} title="右侧加列" type="button">
+          +列
+        </button>
+        <button disabled={!canUseEditor} onClick={() => editor?.chain().focus().deleteTable().run()} title="删除表格" type="button">
+          删表
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AttachmentPanel({
+  attachments,
+  onOpenAttachment,
+}: {
+  attachments: AttachmentRecord[];
+  onOpenAttachment: (attachmentId: string) => void;
+}) {
+  const images = attachments.filter((attachment) => attachment.kind === "image");
+  const files = attachments.filter((attachment) => attachment.kind !== "image");
+
+  return (
+    <section className="attachment-panel" aria-label="附件">
+      <div className="attachment-heading">
+        <h4>附件</h4>
+        <span>{attachments.length}</span>
+      </div>
+
+      {attachments.length === 0 ? (
+        <div className="attachment-empty">暂无附件</div>
+      ) : null}
+
+      {images.length > 0 ? (
+        <div className="image-strip">
+          {images.map((image) => (
+            <button
+              className="image-preview"
+              key={image.id}
+              onClick={() => onOpenAttachment(image.id)}
+              title={image.original_name}
+              type="button"
+            >
+              <img alt={image.original_name} src={attachmentImageSrc(image)} />
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {files.length > 0 ? (
+        <div className="attachment-list">
+          {files.map((file) => (
+            <button
+              className="attachment-card"
+              key={file.id}
+              onClick={() => onOpenAttachment(file.id)}
+              type="button"
+            >
+              <span className="file-icon">□</span>
+              <span>
+                <strong>{file.original_name}</strong>
+                <small>{formatFileSize(file.size)}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -709,8 +1100,83 @@ function toStorageNoteType(noteType: NoteType): StorageNoteType {
   return noteType;
 }
 
+function defaultContentForType(noteType: StorageNoteType) {
+  if (noteType === "todo") {
+    return "<ul><li><p>新待办</p></li></ul>";
+  }
+
+  if (noteType === "timeline") {
+    return "<p>记录今天的事情。</p>";
+  }
+
+  if (noteType === "rich_text") {
+    return "<h2>新笔记</h2><p></p>";
+  }
+
+  return "<p>在右侧编辑内容，然后点击保存。</p>";
+}
+
 function resolveFolderName(folders: FolderRecord[], folderId: string) {
   return folders.find((folder) => folder.id === folderId)?.name ?? "未分类";
+}
+
+function normalizeEditorContent(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return "<p></p>";
+  }
+
+  if (trimmed.startsWith("<") && trimmed.includes(">")) {
+    return value;
+  }
+
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => `<p>${escapeHtml(line) || "<br>"}</p>`)
+    .join("");
+}
+
+function plainTextFromContent(value: string) {
+  return value
+    .replace(/<style[^>]*>.*?<\/style>/gis, " ")
+    .replace(/<script[^>]*>.*?<\/script>/gis, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function attachmentImageSrc(attachment: AttachmentRecord) {
+  try {
+    return convertFileSrc(attachment.stored_path);
+  } catch {
+    return `file:///${attachment.stored_path.replace(/\\/g, "/")}`;
+  }
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) {
+    return `${size} B`;
+  }
+
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDate(value: string) {

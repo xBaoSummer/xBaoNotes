@@ -2,7 +2,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const APP_DIR_NAME: &str = "xBaoNotes";
@@ -64,6 +64,19 @@ pub struct RecycleItemRecord {
     pub title_snapshot: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AttachmentRecord {
+    pub id: String,
+    pub note_id: String,
+    pub original_name: String,
+    pub stored_name: String,
+    pub stored_path: String,
+    pub mime_type: String,
+    pub size: i64,
+    pub kind: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateFolderRequest {
     pub name: String,
@@ -102,6 +115,17 @@ pub struct SetNotePinnedRequest {
 #[derive(Debug, Deserialize)]
 pub struct NoteIdRequest {
     pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AttachmentIdRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAttachmentRequest {
+    pub note_id: String,
+    pub source_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,6 +475,13 @@ pub fn purge_note(request: NoteIdRequest) -> Result<(), String> {
 
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
+    ensure_note_is_deleted(&connection, id)?;
+    let attachment_paths = list_attachment_paths_for_note(&connection, id)?;
+
+    for stored_path in &attachment_paths {
+        remove_file_if_exists(stored_path)?;
+    }
+
     let changed = connection
         .execute("DELETE FROM notes WHERE id = ?1 AND is_deleted = 1", params![id])
         .map_err(|error| error.to_string())?;
@@ -462,6 +493,7 @@ pub fn purge_note(request: NoteIdRequest) -> Result<(), String> {
     connection
         .execute("DELETE FROM recycle_items WHERE note_id = ?1", params![id])
         .map_err(|error| error.to_string())?;
+    remove_note_attachment_dir(&paths, id)?;
 
     Ok(())
 }
@@ -469,6 +501,11 @@ pub fn purge_note(request: NoteIdRequest) -> Result<(), String> {
 pub fn empty_recycle_bin() -> Result<(), String> {
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
+    let attachment_paths = list_attachment_paths_for_deleted_notes(&connection)?;
+
+    for stored_path in &attachment_paths {
+        remove_file_if_exists(stored_path)?;
+    }
 
     connection
         .execute("DELETE FROM notes WHERE is_deleted = 1", [])
@@ -478,6 +515,138 @@ pub fn empty_recycle_bin() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+pub fn create_attachment(request: CreateAttachmentRequest) -> Result<AttachmentRecord, String> {
+    let note_id = request.note_id.trim();
+    let source_path_text = request.source_path.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    if source_path_text.is_empty() {
+        return Err("附件路径不能为空".to_string());
+    }
+
+    let source_path = PathBuf::from(source_path_text);
+
+    if !source_path.is_file() {
+        return Err("只能拖入本地文件，暂不支持文件夹".to_string());
+    }
+
+    let original_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or("无法读取附件文件名")?
+        .to_string();
+    let safe_original_name = sanitize_file_name(&original_name);
+
+    if safe_original_name.is_empty() {
+        return Err("附件文件名无效".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    ensure_note_is_active(&connection, note_id)?;
+
+    let note_attachment_dir = PathBuf::from(&paths.attachments_dir).join(note_id);
+    fs::create_dir_all(&note_attachment_dir).map_err(|error| {
+        format!("无法创建附件目录 {}: {}", note_attachment_dir.display(), error)
+    })?;
+
+    let id = Uuid::new_v4().to_string();
+    let stored_name = format!("{}_{}", id, safe_original_name);
+    let stored_path = note_attachment_dir.join(&stored_name);
+    fs::copy(&source_path, &stored_path).map_err(|error| {
+        format!(
+            "无法复制附件 {} 到 {}: {}",
+            source_path.display(),
+            stored_path.display(),
+            error
+        )
+    })?;
+
+    let metadata = fs::metadata(&stored_path).map_err(|error| error.to_string())?;
+    let mime_type = guess_mime_type(&stored_path);
+    let kind = classify_attachment_kind(&stored_path);
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            "INSERT INTO attachments (
+                id, note_id, original_name, stored_name, stored_path,
+                mime_type, size, kind, created_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id,
+                note_id,
+                original_name,
+                stored_name,
+                path_to_string(stored_path),
+                mime_type,
+                metadata.len() as i64,
+                kind,
+                now
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE notes
+             SET updated_at = ?1
+             WHERE id = ?2 AND is_deleted = 0",
+            params![now, note_id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_attachment(&connection, &id)
+}
+
+pub fn list_attachments(request: NoteIdRequest) -> Result<Vec<AttachmentRecord>, String> {
+    let note_id = request.id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, note_id, original_name, stored_name, stored_path,
+                    mime_type, size, kind, created_at
+             FROM attachments
+             WHERE note_id = ?1
+             ORDER BY created_at ASC",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map(params![note_id], map_attachment_row)
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+pub fn open_attachment(request: AttachmentIdRequest) -> Result<(), String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("附件 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let attachment = get_attachment(&connection, id)?;
+    let stored_path = PathBuf::from(&attachment.stored_path);
+
+    if !stored_path.is_file() {
+        return Err("附件文件不存在，可能已被移动或删除".to_string());
+    }
+
+    tauri_plugin_opener::open_path(stored_path, None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
@@ -608,12 +777,27 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
                 FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS attachments (
+                id TEXT PRIMARY KEY,
+                note_id TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                stored_name TEXT NOT NULL,
+                stored_path TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('image', 'file')),
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
             CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
             CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
             CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(is_deleted);
             CREATE INDEX IF NOT EXISTS idx_recycle_items_note_id ON recycle_items(note_id);
             CREATE INDEX IF NOT EXISTS idx_recycle_items_deleted_at ON recycle_items(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
+            CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind);
             ",
         )
         .map_err(|error| error.to_string())
@@ -734,6 +918,38 @@ fn ensure_folder_exists(connection: &Connection, folder_id: &str) -> Result<(), 
     Ok(())
 }
 
+fn ensure_note_is_active(connection: &Connection, note_id: &str) -> Result<(), String> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id = ?1 AND is_deleted = 0",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    if count == 0 {
+        return Err("未找到可添加附件的便签".to_string());
+    }
+
+    Ok(())
+}
+
+fn ensure_note_is_deleted(connection: &Connection, note_id: &str) -> Result<(), String> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id = ?1 AND is_deleted = 1",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    if count == 0 {
+        return Err("未找到可彻底删除的便签".to_string());
+    }
+
+    Ok(())
+}
+
 fn folder_exists(connection: &Connection, folder_id: &str) -> Result<bool, String> {
     let count: i64 = connection
         .query_row(
@@ -744,6 +960,71 @@ fn folder_exists(connection: &Connection, folder_id: &str) -> Result<bool, Strin
         .map_err(|error| error.to_string())?;
 
     Ok(count > 0)
+}
+
+fn get_attachment(connection: &Connection, id: &str) -> Result<AttachmentRecord, String> {
+    connection
+        .query_row(
+            "SELECT id, note_id, original_name, stored_name, stored_path,
+                    mime_type, size, kind, created_at
+             FROM attachments
+             WHERE id = ?1",
+            params![id],
+            map_attachment_row,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn list_attachment_paths_for_note(connection: &Connection, note_id: &str) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT stored_path
+             FROM attachments
+             WHERE note_id = ?1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![note_id], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+fn list_attachment_paths_for_deleted_notes(connection: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT attachments.stored_path
+             FROM attachments
+             INNER JOIN notes ON notes.id = attachments.note_id
+             WHERE notes.is_deleted = 1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+fn remove_file_if_exists(path: &str) -> Result<(), String> {
+    let file_path = PathBuf::from(path);
+
+    match fs::remove_file(&file_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("无法删除附件 {}: {}", file_path.display(), error)),
+    }
+}
+
+fn remove_note_attachment_dir(paths: &AppPaths, note_id: &str) -> Result<(), String> {
+    let dir = PathBuf::from(&paths.attachments_dir).join(note_id);
+
+    match fs::remove_dir(&dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(error) => Err(format!("无法清理附件目录 {}: {}", dir.display(), error)),
+    }
 }
 
 fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
@@ -761,6 +1042,20 @@ fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
     })
 }
 
+fn map_attachment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentRecord> {
+    Ok(AttachmentRecord {
+        id: row.get(0)?,
+        note_id: row.get(1)?,
+        original_name: row.get(2)?,
+        stored_name: row.get(3)?,
+        stored_path: row.get(4)?,
+        mime_type: row.get(5)?,
+        size: row.get(6)?,
+        kind: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
 fn map_recycle_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecycleItemRecord> {
     Ok(RecycleItemRecord {
         id: row.get(0)?,
@@ -769,6 +1064,56 @@ fn map_recycle_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecycleItem
         deleted_at: row.get(3)?,
         title_snapshot: row.get(4)?,
     })
+}
+
+fn sanitize_file_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| match character {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>();
+
+    sanitized.trim().trim_matches('.').to_string()
+}
+
+fn guess_mime_type(path: &Path) -> String {
+    match extension_lowercase(path).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt") | Some("md") => "text/plain",
+        Some("json") => "application/json",
+        Some("csv") => "text/csv",
+        Some("doc") => "application/msword",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("ppt") => "application/vnd.ms-powerpoint",
+        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        Some("zip") => "application/zip",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
+fn classify_attachment_kind(path: &Path) -> &'static str {
+    match extension_lowercase(path).as_deref() {
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg") => "image",
+        _ => "file",
+    }
+}
+
+fn extension_lowercase(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
 }
 
 fn normalize_note_type(value: &str) -> Result<&'static str, String> {
@@ -828,6 +1173,7 @@ mod tests {
 
         assert_eq!(count_rows(&connection, "settings").unwrap(), 4);
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
+        assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
         assert!(!default_folder_id.is_empty());
     }
@@ -931,5 +1277,51 @@ mod tests {
             .expect("purge note");
 
         assert_eq!(count_rows(&connection, "notes").unwrap(), 0);
+    }
+
+    #[test]
+    fn attachment_records_are_linked_to_notes() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        create_schema(&connection).expect("create schema");
+        let folder_id = ensure_default_folder(&connection).expect("seed folder");
+        let now = Utc::now().to_rfc3339();
+        let note_id = Uuid::new_v4().to_string();
+        let attachment_id = Uuid::new_v4().to_string();
+
+        connection
+            .execute(
+                "INSERT INTO notes (
+                    id, type, title, content, folder_id, is_pinned, is_deleted,
+                    created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, 'rich_text', '附件笔记', '<p>内容</p>', ?2, 0, 0, ?3, ?3, NULL)",
+                params![note_id, folder_id, now],
+            )
+            .expect("insert note");
+        connection
+            .execute(
+                "INSERT INTO attachments (
+                    id, note_id, original_name, stored_name, stored_path,
+                    mime_type, size, kind, created_at
+                 )
+                 VALUES (?1, ?2, 'photo.png', 'stored_photo.png', 'attachments/photo.png',
+                    'image/png', 12, 'image', ?3)",
+                params![attachment_id, note_id, now],
+            )
+            .expect("insert attachment");
+
+        let attachment = get_attachment(&connection, &attachment_id).expect("read attachment");
+        let attachment_paths =
+            list_attachment_paths_for_note(&connection, &note_id).expect("list attachment paths");
+
+        assert_eq!(attachment.note_id, note_id);
+        assert_eq!(attachment.kind, "image");
+        assert_eq!(attachment_paths, vec!["attachments/photo.png".to_string()]);
+
+        connection
+            .execute("DELETE FROM notes WHERE id = ?1", params![note_id])
+            .expect("delete note");
+
+        assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
     }
 }

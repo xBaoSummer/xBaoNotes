@@ -121,9 +121,22 @@ Phase 4 已实现回收站命令：
 - `purge_note`：彻底删除单条回收站便签。
 - `empty_recycle_bin`：清空回收站。
 
+Phase 5 已实现富文本和附件基础能力：
+
+- 前端接入 TipTap / ProseMirror 富文本编辑器。
+- 富文本正文以 HTML 字符串保存到 `notes.content`。
+- 支持加粗、斜体、下划线、文字颜色、高亮、有序列表、无序列表。
+- 支持表格插入、增行、增列、删除表格，表格内容随正文 HTML 保存。
+- 新增 `attachments` 表，保存附件归属、原始文件名、软件管理文件名、存储路径、MIME、大小、类型和创建时间。
+- 新增 `create_attachment`：将拖入文件复制到 `Documents\xBaoNotes\Attachments\<note_id>` 并写入数据库。
+- 新增 `list_attachments`：读取指定便签附件。
+- 新增 `open_attachment`：调用系统默认程序打开软件管理目录中的附件。
+- 图片附件通过 Tauri `asset` 协议在前端预览，访问范围限制到 `$DOCUMENT/xBaoNotes/Attachments/**`。
+- 彻底删除便签和清空回收站时，会删除关联附件文件并移除附件数据库记录。
+- 从回收站恢复便签时，附件保持原关联关系，不需要额外迁移。
+
 后续阶段再扩展：
 
-- `attachments`
 - `reminders`
 - `sticky_windows`
 
@@ -203,6 +216,7 @@ Backup\2026-06-12_153000
 2. 在数据库记录原始文件名、存储文件名、大小、类型、所属便签。
 3. 便签中显示预览或附件卡片。
 4. 打开附件时调用系统默认程序。
+5. 彻底删除便签时清理关联附件文件。
 
 不得只保存原始文件路径，否则原文件移动后会导致附件丢失。
 

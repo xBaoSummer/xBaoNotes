@@ -2,16 +2,26 @@
 
 ## Current Phase
 
-Phase 5：富文本、图片和附件。
+Phase 6：桌面贴出便签。
 
 ## Next Tasks
 
-- 接入富文本编辑器。
-- 实现完整表格能力。
-- 实现图片拖入和预览。
-- 实现附件拖入和附件卡片。
-- 附件复制到 `Documents\xBaoNotes\Attachments` 管理目录。
-- 删除、恢复、彻底删除时处理附件关联关系。
+- 设计桌面便签独立窗口数据结构。
+- 新增 `sticky_windows` 表。
+- 新增贴出/取消贴出命令。
+- 实现单条便签独立窗口。
+- 保存桌面便签窗口位置和尺寸。
+- 默认置顶，支持手动取消置顶。
+- 软件重启后恢复贴出窗口并自动重新置顶。
+
+## Completed This Phase
+
+- Phase 5 已接入富文本编辑器。
+- Phase 5 已实现表格基础能力。
+- Phase 5 已实现图片拖入和预览。
+- Phase 5 已实现附件拖入和附件卡片。
+- Phase 5 已实现附件复制到 `Documents\xBaoNotes\Attachments` 管理目录。
+- Phase 5 已实现彻底删除和清空回收站时清理附件。
 
 ## Backlog
 
@@ -28,7 +38,7 @@ Phase 5：富文本、图片和附件。
 
 ## Pending Confirmation
 
-- 是否继续按计划推进 Phase 5：富文本、图片和附件。
+- 是否继续按计划推进 Phase 6：桌面贴出便签。
 
 ## Deferred
 
