@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Duration, Months, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -90,6 +90,24 @@ pub struct StickyWindowRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ReminderRecord {
+    pub id: String,
+    pub note_id: String,
+    pub note_title: String,
+    pub note_type: String,
+    pub reminder_type: String,
+    pub title: String,
+    pub message: String,
+    pub remind_at: String,
+    pub repeat_rule: String,
+    pub custom_interval_days: i64,
+    pub is_enabled: bool,
+    pub last_triggered_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateFolderRequest {
     pub name: String,
@@ -160,6 +178,40 @@ pub struct SaveStickyBoundsRequest {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateReminderRequest {
+    pub note_id: String,
+    pub reminder_type: String,
+    pub title: String,
+    pub message: String,
+    pub remind_at: String,
+    pub repeat_rule: String,
+    pub custom_interval_days: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateReminderRequest {
+    pub id: String,
+    pub reminder_type: String,
+    pub title: String,
+    pub message: String,
+    pub remind_at: String,
+    pub repeat_rule: String,
+    pub custom_interval_days: Option<i64>,
+    pub is_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReminderIdRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ListRemindersRequest {
+    pub note_id: Option<String>,
+    pub include_disabled: Option<bool>,
 }
 
 pub fn init_storage() -> Result<StorageStatus, String> {
@@ -939,6 +991,243 @@ pub fn force_sticky_always_on_top(note_id: &str) -> Result<StickyWindowRecord, S
     })
 }
 
+pub fn create_reminder(request: CreateReminderRequest) -> Result<ReminderRecord, String> {
+    let note_id = request.note_id.trim();
+    let title = request.title.trim();
+    let reminder_type = normalize_reminder_type(&request.reminder_type)?;
+    let repeat_rule = normalize_repeat_rule(&request.repeat_rule)?;
+    let custom_interval_days =
+        normalize_custom_interval_days(request.custom_interval_days, repeat_rule)?;
+    let remind_at = normalize_remind_at(&request.remind_at)?;
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    if title.is_empty() {
+        return Err("提醒标题不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    ensure_note_is_active(&connection, note_id)?;
+    let now = Utc::now().to_rfc3339();
+    let id = Uuid::new_v4().to_string();
+
+    connection
+        .execute(
+            "INSERT INTO reminders (
+                id, note_id, reminder_type, title, message, remind_at, repeat_rule, custom_interval_days,
+                is_enabled, last_triggered_at, created_at, updated_at
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, NULL, ?9, ?9)",
+            params![
+                id,
+                note_id,
+                reminder_type,
+                title,
+                request.message,
+                remind_at,
+                repeat_rule,
+                custom_interval_days,
+                now
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_reminder(&connection, &id)
+}
+
+pub fn update_reminder(request: UpdateReminderRequest) -> Result<ReminderRecord, String> {
+    let id = request.id.trim();
+    let title = request.title.trim();
+    let reminder_type = normalize_reminder_type(&request.reminder_type)?;
+    let repeat_rule = normalize_repeat_rule(&request.repeat_rule)?;
+    let custom_interval_days =
+        normalize_custom_interval_days(request.custom_interval_days, repeat_rule)?;
+    let remind_at = normalize_remind_at(&request.remind_at)?;
+
+    if id.is_empty() {
+        return Err("提醒 ID 不能为空".to_string());
+    }
+
+    if title.is_empty() {
+        return Err("提醒标题不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    let enabled = if request.is_enabled { 1 } else { 0 };
+    let changed = connection
+        .execute(
+            "UPDATE reminders
+             SET reminder_type = ?1,
+                 title = ?2,
+                 message = ?3,
+                 remind_at = ?4,
+                 repeat_rule = ?5,
+                 custom_interval_days = ?6,
+                 is_enabled = ?7,
+                 updated_at = ?8
+             WHERE id = ?9",
+            params![
+                reminder_type,
+                title,
+                request.message,
+                remind_at,
+                repeat_rule,
+                custom_interval_days,
+                enabled,
+                now,
+                id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("未找到提醒".to_string());
+    }
+
+    get_reminder(&connection, id)
+}
+
+pub fn delete_reminder(request: ReminderIdRequest) -> Result<(), String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("提醒 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    connection
+        .execute("DELETE FROM reminders WHERE id = ?1", params![id])
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+pub fn list_reminders(request: ListRemindersRequest) -> Result<Vec<ReminderRecord>, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let note_id = normalize_optional_text(request.note_id);
+    let include_disabled = request.include_disabled.unwrap_or(false);
+    let mut statement = connection
+        .prepare(
+            "SELECT reminders.id,
+                    reminders.note_id,
+                    notes.title,
+                    notes.type,
+                    reminders.reminder_type,
+                    reminders.title,
+                    reminders.message,
+                    reminders.remind_at,
+                    reminders.repeat_rule,
+                    reminders.custom_interval_days,
+                    reminders.is_enabled,
+                    reminders.last_triggered_at,
+                    reminders.created_at,
+                    reminders.updated_at
+             FROM reminders
+             INNER JOIN notes ON notes.id = reminders.note_id
+             WHERE notes.is_deleted = 0
+                AND (?1 IS NULL OR reminders.note_id = ?1)
+                AND (?2 = 1 OR reminders.is_enabled = 1)
+             ORDER BY reminders.is_enabled DESC, reminders.remind_at ASC",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map(params![note_id, if include_disabled { 1 } else { 0 }], map_reminder_row)
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+pub fn list_due_reminders() -> Result<Vec<ReminderRecord>, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    let mut statement = connection
+        .prepare(
+            "SELECT reminders.id,
+                    reminders.note_id,
+                    notes.title,
+                    notes.type,
+                    reminders.reminder_type,
+                    reminders.title,
+                    reminders.message,
+                    reminders.remind_at,
+                    reminders.repeat_rule,
+                    reminders.custom_interval_days,
+                    reminders.is_enabled,
+                    reminders.last_triggered_at,
+                    reminders.created_at,
+                    reminders.updated_at
+             FROM reminders
+             INNER JOIN notes ON notes.id = reminders.note_id
+             WHERE notes.is_deleted = 0
+                AND reminders.is_enabled = 1
+                AND reminders.remind_at <= ?1
+             ORDER BY reminders.remind_at ASC
+             LIMIT 20",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map(params![now], map_reminder_row)
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+pub fn complete_reminder(request: ReminderIdRequest) -> Result<ReminderRecord, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("提醒 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let reminder = get_reminder(&connection, id)?;
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+
+    if reminder.repeat_rule == "none" {
+        connection
+            .execute(
+                "UPDATE reminders
+                 SET is_enabled = 0,
+                     last_triggered_at = ?1,
+                     updated_at = ?1
+                 WHERE id = ?2",
+                params![now_text, id],
+            )
+            .map_err(|error| error.to_string())?;
+    } else {
+        let next_remind_at = next_repeat_time(
+            &reminder.remind_at,
+            &reminder.repeat_rule,
+            reminder.custom_interval_days,
+            now,
+        )?;
+        connection
+            .execute(
+                "UPDATE reminders
+                 SET remind_at = ?1,
+                     last_triggered_at = ?2,
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![next_remind_at, now_text, id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    get_reminder(&connection, id)
+}
+
 fn ensure_app_paths() -> Result<AppPaths, String> {
     let documents_dir = dirs::document_dir().ok_or("无法定位当前用户的 Documents 目录")?;
     let root_dir = documents_dir.join(APP_DIR_NAME);
@@ -1049,6 +1338,22 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
                 FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS reminders (
+                id TEXT PRIMARY KEY,
+                note_id TEXT NOT NULL,
+                reminder_type TEXT NOT NULL CHECK (reminder_type IN ('once', 'due', 'repeat', 'anniversary', 'review')),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                remind_at TEXT NOT NULL,
+                repeat_rule TEXT NOT NULL DEFAULT 'none' CHECK (repeat_rule IN ('none', 'daily', 'weekly', 'monthly', 'yearly', 'custom')),
+                custom_interval_days INTEGER NOT NULL DEFAULT 1 CHECK (custom_interval_days >= 1 AND custom_interval_days <= 3650),
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                last_triggered_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
             CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
             CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
@@ -1058,6 +1363,8 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
             CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind);
             CREATE INDEX IF NOT EXISTS idx_sticky_windows_posted ON sticky_windows(is_posted);
+            CREATE INDEX IF NOT EXISTS idx_reminders_note_id ON reminders(note_id);
+            CREATE INDEX IF NOT EXISTS idx_reminders_enabled_time ON reminders(is_enabled, remind_at);
             ",
         )
         .map_err(|error| error.to_string())
@@ -1253,6 +1560,32 @@ fn get_sticky_window_by_note_id(
         .map_err(|error| error.to_string())
 }
 
+fn get_reminder(connection: &Connection, id: &str) -> Result<ReminderRecord, String> {
+    connection
+        .query_row(
+            "SELECT reminders.id,
+                    reminders.note_id,
+                    notes.title,
+                    notes.type,
+                    reminders.reminder_type,
+                    reminders.title,
+                    reminders.message,
+                    reminders.remind_at,
+                    reminders.repeat_rule,
+                    reminders.custom_interval_days,
+                    reminders.is_enabled,
+                    reminders.last_triggered_at,
+                    reminders.created_at,
+                    reminders.updated_at
+             FROM reminders
+             INNER JOIN notes ON notes.id = reminders.note_id
+             WHERE reminders.id = ?1",
+            params![id],
+            map_reminder_row,
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn list_attachment_paths_for_note(
     connection: &Connection,
     note_id: &str,
@@ -1351,6 +1684,25 @@ fn map_sticky_window_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StickyWind
     })
 }
 
+fn map_reminder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReminderRecord> {
+    Ok(ReminderRecord {
+        id: row.get(0)?,
+        note_id: row.get(1)?,
+        note_title: row.get(2)?,
+        note_type: row.get(3)?,
+        reminder_type: row.get(4)?,
+        title: row.get(5)?,
+        message: row.get(6)?,
+        remind_at: row.get(7)?,
+        repeat_rule: row.get(8)?,
+        custom_interval_days: row.get(9)?,
+        is_enabled: row.get::<_, i64>(10)? == 1,
+        last_triggered_at: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
 fn map_recycle_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecycleItemRecord> {
     Ok(RecycleItemRecord {
         id: row.get(0)?,
@@ -1421,6 +1773,84 @@ fn normalize_note_type(value: &str) -> Result<&'static str, String> {
     }
 }
 
+fn normalize_reminder_type(value: &str) -> Result<&'static str, String> {
+    match value {
+        "once" => Ok("once"),
+        "due" => Ok("due"),
+        "repeat" => Ok("repeat"),
+        "anniversary" => Ok("anniversary"),
+        "review" => Ok("review"),
+        _ => Err("不支持的提醒类型".to_string()),
+    }
+}
+
+fn normalize_repeat_rule(value: &str) -> Result<&'static str, String> {
+    match value {
+        "none" | "" => Ok("none"),
+        "daily" => Ok("daily"),
+        "weekly" => Ok("weekly"),
+        "monthly" => Ok("monthly"),
+        "yearly" => Ok("yearly"),
+        "custom" => Ok("custom"),
+        _ => Err("不支持的重复规则".to_string()),
+    }
+}
+
+fn normalize_custom_interval_days(
+    value: Option<i64>,
+    repeat_rule: &str,
+) -> Result<i64, String> {
+    let days = value.unwrap_or(1);
+
+    if repeat_rule != "custom" {
+        return Ok(1);
+    }
+
+    if !(1..=3650).contains(&days) {
+        return Err("自定义重复间隔必须在 1 到 3650 天之间".to_string());
+    }
+
+    Ok(days)
+}
+
+fn normalize_remind_at(value: &str) -> Result<String, String> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|date| date.with_timezone(&Utc).to_rfc3339())
+        .map_err(|_| "提醒时间格式无效".to_string())
+}
+
+fn next_repeat_time(
+    remind_at: &str,
+    repeat_rule: &str,
+    custom_interval_days: i64,
+    now: DateTime<Utc>,
+) -> Result<String, String> {
+    let mut next = DateTime::parse_from_rfc3339(remind_at)
+        .map_err(|_| "提醒时间格式无效".to_string())?
+        .with_timezone(&Utc);
+
+    if repeat_rule == "custom" && custom_interval_days < 1 {
+        return Err("自定义重复间隔必须大于 0 天".to_string());
+    }
+
+    while next <= now {
+        next = match repeat_rule {
+            "daily" => next + Duration::days(1),
+            "weekly" => next + Duration::weeks(1),
+            "monthly" => next
+                .checked_add_months(Months::new(1))
+                .ok_or("无法计算下一个月度提醒时间")?,
+            "yearly" => next
+                .checked_add_months(Months::new(12))
+                .ok_or("无法计算下一个年度提醒时间")?,
+            "custom" => next + Duration::days(custom_interval_days),
+            _ => return Err("不支持的重复规则".to_string()),
+        };
+    }
+
+    Ok(next.to_rfc3339())
+}
+
 fn normalize_optional_note_type(value: Option<String>) -> Result<Option<String>, String> {
     match normalize_optional_text(value) {
         Some(value) if value == "all" => Ok(None),
@@ -1471,6 +1901,7 @@ mod tests {
         assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
         assert_eq!(count_rows(&connection, "sticky_windows").unwrap(), 0);
+        assert_eq!(count_rows(&connection, "reminders").unwrap(), 0);
         assert!(!default_folder_id.is_empty());
     }
 
@@ -1677,5 +2108,54 @@ mod tests {
 
         assert!(!updated_sticky.is_posted);
         assert_eq!(updated_sticky.width, 480.0);
+    }
+
+    #[test]
+    fn reminder_records_can_be_triggered_and_repeated() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        create_schema(&connection).expect("create schema");
+        let folder_id = ensure_default_folder(&connection).expect("seed folder");
+        let now = Utc::now();
+        let note_id = Uuid::new_v4().to_string();
+        let reminder_id = Uuid::new_v4().to_string();
+
+        connection
+            .execute(
+                "INSERT INTO notes (
+                    id, type, title, content, folder_id, is_pinned, is_deleted,
+                    created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, 'todo', '提醒便签', '<p>内容</p>', ?2, 0, 0, ?3, ?3, NULL)",
+                params![note_id, folder_id, now.to_rfc3339()],
+            )
+            .expect("insert note");
+        connection
+            .execute(
+                "INSERT INTO reminders (
+                    id, note_id, reminder_type, title, message, remind_at, repeat_rule, custom_interval_days,
+                    is_enabled, last_triggered_at, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, 'repeat', '每日提醒', '提醒内容', ?3, 'daily', 1, 1, NULL, ?4, ?4)",
+                params![
+                    reminder_id,
+                    note_id,
+                    (now - Duration::days(1)).to_rfc3339(),
+                    now.to_rfc3339()
+                ],
+            )
+            .expect("insert reminder");
+
+        let reminder = get_reminder(&connection, &reminder_id).expect("read reminder");
+        let next_time =
+            next_repeat_time(
+                &reminder.remind_at,
+                &reminder.repeat_rule,
+                reminder.custom_interval_days,
+                now,
+            )
+            .expect("next repeat");
+
+        assert_eq!(reminder.note_title, "提醒便签");
+        assert!(DateTime::parse_from_rfc3339(&next_time).unwrap().with_timezone(&Utc) > now);
     }
 }

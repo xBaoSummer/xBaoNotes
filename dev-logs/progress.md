@@ -435,3 +435,50 @@
 - Phase 7 已实现基础贴边展开，不包含复杂动画和多显示器逐屏选择；当前按主显示器工作区定位。
 - 开机自启动使用当前用户注册表，适合普通安装版；便携版最终需要在 Phase 11 再确认是否默认关闭自启动。
 - 主窗口默认隐藏后，用户需要通过贴边入口或托盘打开主页面；这符合默认贴边入口需求。
+
+## 2026-06-13 Phase 8 提醒系统
+
+### Completed
+
+- 新增 Tauri notification 插件，用于 Windows 系统通知。
+- 新增 `reminders` SQLite 表，保存提醒类型、提醒时间、重复规则、自定义间隔、启用状态和触发记录。
+- 新增提醒命令：`create_reminder`、`update_reminder`、`delete_reminder`、`list_reminders`、`list_due_reminders`、`complete_reminder`。
+- 普通便签默认使用指定时间提醒。
+- 待办默认使用截止提醒，并支持每天、每周、每月、每年和自定义天数重复。
+- 时间轴默认使用纪念日提醒，并默认按年重复。
+- 富文本笔记默认使用复习提醒。
+- 主工作台新增提醒设置面板，可新建、暂停、启用、删除提醒。
+- 主窗口每 30 秒检查到期提醒，到期后弹出 Windows 通知。
+- 一次性提醒触发后自动停用；重复提醒触发后自动推进到下一次提醒时间。
+- 月度和年度重复提醒使用自然月/自然年推进。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `package.json`
+- `package-lock.json`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/capabilities/default.json`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，6 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+
+### Risks
+
+- Windows 通知权限被拒绝时，到期提醒会继续保留并等待后续授权。
+- 当前提醒检查依赖主窗口进程存活；主窗口默认隐藏但仍存在，适合贴边入口和托盘启动模式。
+- Phase 8 未做复杂日历表达式，后续如需“每个工作日”等规则可单独扩展。

@@ -4,10 +4,11 @@ use serde::Deserialize;
 use std::process::Command;
 use storage::{
     AttachmentIdRequest, AttachmentRecord, CreateAttachmentRequest, CreateFolderRequest,
-    CreateNoteRequest, FolderRecord, ListNotesRequest, NoteIdRequest, NoteRecord,
-    RecycleItemRecord, SaveStickyBoundsRequest, SetNotePinnedRequest, SetSettingRequest,
+    CreateNoteRequest, CreateReminderRequest, FolderRecord, ListNotesRequest,
+    ListRemindersRequest, NoteIdRequest, NoteRecord, RecycleItemRecord, ReminderIdRequest,
+    ReminderRecord, SaveStickyBoundsRequest, SetNotePinnedRequest, SetSettingRequest,
     SetStickyAlwaysOnTopRequest, SettingRecord, StickyWindowRecord, StorageStatus,
-    UpdateNoteRequest,
+    UpdateNoteRequest, UpdateReminderRequest,
 };
 use tauri::{
     menu::MenuBuilder,
@@ -197,6 +198,36 @@ fn set_auto_start_enabled(request: AutoStartRequest) -> Result<SettingRecord, St
         key: "auto_start_enabled".to_string(),
         value: request.enabled.to_string(),
     })
+}
+
+#[tauri::command]
+fn create_reminder(request: CreateReminderRequest) -> Result<ReminderRecord, String> {
+    storage::create_reminder(request)
+}
+
+#[tauri::command]
+fn update_reminder(request: UpdateReminderRequest) -> Result<ReminderRecord, String> {
+    storage::update_reminder(request)
+}
+
+#[tauri::command]
+fn delete_reminder(request: ReminderIdRequest) -> Result<(), String> {
+    storage::delete_reminder(request)
+}
+
+#[tauri::command]
+fn list_reminders(request: ListRemindersRequest) -> Result<Vec<ReminderRecord>, String> {
+    storage::list_reminders(request)
+}
+
+#[tauri::command]
+fn list_due_reminders() -> Result<Vec<ReminderRecord>, String> {
+    storage::list_due_reminders()
+}
+
+#[tauri::command]
+fn complete_reminder(request: ReminderIdRequest) -> Result<ReminderRecord, String> {
+    storage::complete_reminder(request)
 }
 
 #[tauri::command]
@@ -611,6 +642,7 @@ fn setup_error(error: String) -> Box<dyn std::error::Error> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             storage::init_storage().map_err(setup_error)?;
             setup_main_window_events(app.handle());
@@ -646,6 +678,12 @@ pub fn run() {
             set_edge_position,
             get_auto_start_enabled,
             set_auto_start_enabled,
+            create_reminder,
+            update_reminder,
+            delete_reminder,
+            list_reminders,
+            list_due_reminders,
+            complete_reminder,
             post_sticky_note,
             unpost_sticky_note,
             get_sticky_window,

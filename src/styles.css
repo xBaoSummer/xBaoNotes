@@ -688,6 +688,96 @@ h2 {
   color: var(--muted);
 }
 
+.reminder-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+
+.reminder-form {
+  display: grid;
+  gap: 10px;
+}
+
+.reminder-message {
+  min-height: 70px;
+  padding: 10px;
+  resize: vertical;
+}
+
+.reminder-list {
+  display: grid;
+  gap: 10px;
+}
+
+.reminder-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-strong), var(--accent-soft) 12%);
+}
+
+.reminder-card.disabled {
+  opacity: 0.72;
+}
+
+.reminder-card > div,
+.reminder-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.reminder-card h4 {
+  font-size: 15px;
+}
+
+.reminder-card p,
+.reminder-card footer {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.reminder-card footer {
+  align-items: flex-end;
+}
+
+.reminder-card footer div {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.reminder-card .danger-action,
+.reminder-card .ghost-action {
+  min-height: 32px;
+  padding: 0 9px;
+}
+
+.reminder-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--app-bg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.reminder-state.active {
+  color: #0f766e;
+  background: rgba(15, 118, 110, 0.12);
+}
+
 .editor-actions {
   display: grid;
   gap: 10px;

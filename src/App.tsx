@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
@@ -12,13 +13,15 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 
 type NoteType = "all" | "normal" | "todo" | "timeline" | "rich";
 type StorageNoteType = "normal" | "todo" | "timeline" | "rich_text";
 type ThemeMode = "light" | "dark" | "system";
 type StartupMode = "edge_entry" | "main_window" | "tray_only";
 type EdgePosition = "left" | "right" | "top" | "bottom";
+type ReminderType = "once" | "due" | "repeat" | "anniversary" | "review";
+type RepeatRule = "none" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 type AppPaths = {
   root_dir: string;
@@ -88,6 +91,23 @@ type StickyWindowRecord = {
   updated_at: string;
 };
 
+type ReminderRecord = {
+  id: string;
+  note_id: string;
+  note_title: string;
+  note_type: StorageNoteType;
+  reminder_type: ReminderType;
+  title: string;
+  message: string;
+  remind_at: string;
+  repeat_rule: RepeatRule;
+  custom_interval_days: number;
+  is_enabled: boolean;
+  last_triggered_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type SettingRecord = {
   key: string;
   value: string;
@@ -101,6 +121,15 @@ type EditorState = {
   content: string;
   folder_id: string;
   is_pinned: boolean;
+};
+
+type ReminderDraft = {
+  reminder_type: ReminderType;
+  title: string;
+  message: string;
+  remind_at: string;
+  repeat_rule: RepeatRule;
+  custom_interval_days: number;
 };
 
 const noteTypes: Array<{ id: NoteType; label: string }> = [
@@ -135,6 +164,23 @@ const edgePositions: Array<{ id: EdgePosition; label: string }> = [
   { id: "right", label: "右" },
   { id: "top", label: "上" },
   { id: "bottom", label: "下" },
+];
+
+const reminderTypes: Array<{ id: ReminderType; label: string }> = [
+  { id: "once", label: "指定时间" },
+  { id: "due", label: "截止提醒" },
+  { id: "repeat", label: "重复提醒" },
+  { id: "anniversary", label: "纪念日" },
+  { id: "review", label: "复习提醒" },
+];
+
+const repeatRules: Array<{ id: RepeatRule; label: string }> = [
+  { id: "none", label: "不重复" },
+  { id: "daily", label: "每天" },
+  { id: "weekly", label: "每周" },
+  { id: "monthly", label: "每月" },
+  { id: "yearly", label: "每年" },
+  { id: "custom", label: "自定义天数" },
 ];
 
 const typeLabels: Record<StorageNoteType, string> = {
@@ -206,6 +252,8 @@ function MainApp() {
   const [recycleItems, setRecycleItems] = useState<RecycleItemRecord[]>([]);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
   const [stickyWindows, setStickyWindows] = useState<StickyWindowRecord[]>([]);
+  const [reminders, setReminders] = useState<ReminderRecord[]>([]);
+  const [reminderDraft, setReminderDraft] = useState<ReminderDraft | null>(null);
   const [settings, setSettings] = useState<SettingRecord[]>([]);
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [pendingImageAttachments, setPendingImageAttachments] = useState<AttachmentRecord[]>([]);
@@ -216,6 +264,7 @@ function MainApp() {
   const [isFileDragging, setIsFileDragging] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [isRecycleView, setIsRecycleView] = useState(false);
+  const isProcessingReminders = useRef(false);
 
   const resolvedTheme = resolveTheme(themeMode);
   document.documentElement.dataset.theme = resolvedTheme;
@@ -272,6 +321,8 @@ function MainApp() {
       setEditorState(null);
       setAttachments([]);
       setPendingImageAttachments([]);
+      setReminders([]);
+      setReminderDraft(null);
       return;
     }
 
@@ -283,17 +334,29 @@ function MainApp() {
       folder_id: selectedNote.folder_id,
       is_pinned: selectedNote.is_pinned,
     });
+    setReminderDraft(defaultReminderDraft(selectedNote));
   }, [selectedNote]);
 
   useEffect(() => {
     if (selectedNote && !isRecycleView) {
       void loadAttachments(selectedNote.id);
+      void loadReminders(selectedNote.id);
       return;
     }
 
     setAttachments([]);
     setPendingImageAttachments([]);
+    setReminders([]);
   }, [selectedNote?.id, isRecycleView]);
+
+  useEffect(() => {
+    void processDueReminders();
+    const timer = window.setInterval(() => {
+      void processDueReminders();
+    }, 30000);
+
+    return () => window.clearInterval(timer);
+  }, [selectedNoteId]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -388,6 +451,149 @@ function MainApp() {
       setAttachments(attachmentList);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function loadReminders(noteId: string) {
+    try {
+      const reminderList = await invoke<ReminderRecord[]>("list_reminders", {
+        request: {
+          note_id: noteId,
+          include_disabled: true,
+        },
+      });
+      setReminders(reminderList);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function processDueReminders() {
+    if (isProcessingReminders.current) {
+      return;
+    }
+
+    isProcessingReminders.current = true;
+
+    try {
+      const dueReminders = await invoke<ReminderRecord[]>("list_due_reminders");
+
+      if (dueReminders.length === 0) {
+        return;
+      }
+
+      const canNotify = await ensureNotificationPermission();
+
+      if (!canNotify) {
+        setStorageError("Windows 通知权限未开启，暂时无法弹出提醒。");
+        return;
+      }
+
+      for (const reminder of dueReminders) {
+        sendNotification({
+          title: reminder.title || "xBaoNotes 提醒",
+          body: reminderNotificationBody(reminder),
+          group: "xbao-notes-reminders",
+          autoCancel: true,
+          extra: {
+            reminderId: reminder.id,
+            noteId: reminder.note_id,
+          },
+        });
+        await invoke<ReminderRecord>("complete_reminder", {
+          request: { id: reminder.id },
+        });
+      }
+
+      if (selectedNoteId) {
+        await loadReminders(selectedNoteId);
+      }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      isProcessingReminders.current = false;
+    }
+  }
+
+  async function handleCreateReminder() {
+    if (!editorState || !reminderDraft) {
+      return;
+    }
+
+    const title = reminderDraft.title.trim() || editorState.title.trim() || "xBaoNotes 提醒";
+    const message = reminderDraft.message.trim() || typeDefaultReminderMessage(editorState.note_type);
+    const remindAt = reminderInputToRfc3339(reminderDraft.remind_at);
+
+    if (!remindAt) {
+      setStorageError("请选择有效的提醒时间");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke<ReminderRecord>("create_reminder", {
+        request: {
+          note_id: editorState.id,
+          reminder_type: reminderDraft.reminder_type,
+          title,
+          message,
+          remind_at: remindAt,
+          repeat_rule: reminderDraft.repeat_rule,
+          custom_interval_days: reminderDraft.custom_interval_days,
+        },
+      });
+      setReminderDraft(defaultReminderDraft({
+        note_type: editorState.note_type,
+        title: editorState.title,
+      }));
+      await loadReminders(editorState.id);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleToggleReminder(reminder: ReminderRecord) {
+    setIsBusy(true);
+    try {
+      await invoke<ReminderRecord>("update_reminder", {
+        request: {
+          id: reminder.id,
+          reminder_type: reminder.reminder_type,
+          title: reminder.title,
+          message: reminder.message,
+          remind_at: reminder.remind_at,
+          repeat_rule: reminder.repeat_rule,
+          custom_interval_days: reminder.custom_interval_days,
+          is_enabled: !reminder.is_enabled,
+        },
+      });
+      await loadReminders(reminder.note_id);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleDeleteReminder(reminder: ReminderRecord) {
+    const confirmed = window.confirm(`删除提醒“${reminder.title}”？`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke("delete_reminder", {
+        request: { id: reminder.id },
+      });
+      await loadReminders(reminder.note_id);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -774,7 +980,7 @@ function MainApp() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Phase 6</p>
+            <p className="eyebrow">Phase 8</p>
             <h2>{isRecycleView ? "回收站" : "便签工作台"}</h2>
           </div>
           {isRecycleView ? (
@@ -948,6 +1154,17 @@ function MainApp() {
                   value={editorState.content}
                 />
 
+                <ReminderPanel
+                  draft={reminderDraft}
+                  isBusy={isBusy}
+                  noteType={editorState.note_type}
+                  onCreate={handleCreateReminder}
+                  onDelete={handleDeleteReminder}
+                  onDraftChange={setReminderDraft}
+                  onToggle={handleToggleReminder}
+                  reminders={reminders}
+                />
+
                 <div className="editor-actions">
                   <button className="primary-action full-width" disabled={isBusy} onClick={handleSaveNote} type="button">
                     保存
@@ -1049,6 +1266,10 @@ function MainApp() {
               <div>
                 <span>已贴出</span>
                 <strong>{stickyWindows.length}</strong>
+              </div>
+              <div>
+                <span>提醒</span>
+                <strong>{reminders.filter((reminder) => reminder.is_enabled).length}</strong>
               </div>
               <div>
                 <span>回收站</span>
@@ -1320,6 +1541,172 @@ function StickyNoteWindow({ noteId }: { noteId: string }) {
 
       {storageError ? <p className="error-text sticky-error">{storageError}</p> : null}
     </main>
+  );
+}
+
+function ReminderPanel({
+  draft,
+  isBusy,
+  noteType,
+  onCreate,
+  onDelete,
+  onDraftChange,
+  onToggle,
+  reminders,
+}: {
+  draft: ReminderDraft | null;
+  isBusy: boolean;
+  noteType: StorageNoteType;
+  onCreate: () => void;
+  onDelete: (reminder: ReminderRecord) => void;
+  onDraftChange: Dispatch<SetStateAction<ReminderDraft | null>>;
+  onToggle: (reminder: ReminderRecord) => void;
+  reminders: ReminderRecord[];
+}) {
+  if (!draft) {
+    return null;
+  }
+
+  return (
+    <section className="reminder-panel" aria-label="提醒">
+      <div className="panel-heading compact-heading">
+        <h3>提醒</h3>
+        <span>{reminderHintForNoteType(noteType)}</span>
+      </div>
+
+      <div className="reminder-form">
+        <div className="editor-meta-grid">
+          <div className="field-block">
+            <label htmlFor="reminder-type">提醒类型</label>
+            <select
+              id="reminder-type"
+              onChange={(event) =>
+                onDraftChange((current) =>
+                  current ? { ...current, reminder_type: event.target.value as ReminderType } : current,
+                )
+              }
+              value={draft.reminder_type}
+            >
+              {reminderTypes.map((item) => (
+                <option key={item.id} value={item.id}>{item.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field-block">
+            <label htmlFor="reminder-time">提醒时间</label>
+            <input
+              id="reminder-time"
+              onChange={(event) =>
+                onDraftChange((current) =>
+                  current ? { ...current, remind_at: event.target.value } : current,
+                )
+              }
+              type="datetime-local"
+              value={draft.remind_at}
+            />
+          </div>
+        </div>
+
+        <div className="editor-meta-grid">
+          <div className="field-block">
+            <label htmlFor="repeat-rule">重复规则</label>
+            <select
+              id="repeat-rule"
+              onChange={(event) =>
+                onDraftChange((current) =>
+                  current ? { ...current, repeat_rule: event.target.value as RepeatRule } : current,
+                )
+              }
+              value={draft.repeat_rule}
+            >
+              {repeatRules.map((item) => (
+                <option key={item.id} value={item.id}>{item.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field-block">
+            <label htmlFor="custom-interval">自定义间隔</label>
+            <input
+              disabled={draft.repeat_rule !== "custom"}
+              id="custom-interval"
+              min={1}
+              onChange={(event) =>
+                onDraftChange((current) =>
+                  current
+                    ? { ...current, custom_interval_days: Math.max(1, Number(event.target.value) || 1) }
+                    : current,
+                )
+              }
+              type="number"
+              value={draft.custom_interval_days}
+            />
+          </div>
+        </div>
+
+        <div className="field-block">
+          <label htmlFor="reminder-title">提醒标题</label>
+          <input
+            id="reminder-title"
+            onChange={(event) =>
+              onDraftChange((current) =>
+                current ? { ...current, title: event.target.value } : current,
+              )
+            }
+            value={draft.title}
+          />
+        </div>
+
+        <div className="field-block">
+          <label htmlFor="reminder-message">提醒内容</label>
+          <textarea
+            className="reminder-message"
+            id="reminder-message"
+            onChange={(event) =>
+              onDraftChange((current) =>
+                current ? { ...current, message: event.target.value } : current,
+              )
+            }
+            value={draft.message}
+          />
+        </div>
+
+        <button className="primary-action full-width" disabled={isBusy} onClick={onCreate} type="button">
+          新建提醒
+        </button>
+      </div>
+
+      <div className="reminder-list">
+        {reminders.length === 0 ? (
+          <div className="attachment-empty">暂无提醒</div>
+        ) : null}
+
+        {reminders.map((reminder) => (
+          <article className={reminder.is_enabled ? "reminder-card" : "reminder-card disabled"} key={reminder.id}>
+            <div>
+              <span className="type-pill">{reminderTypeLabel(reminder.reminder_type)}</span>
+              <span className={reminder.is_enabled ? "reminder-state active" : "reminder-state"}>
+                {reminder.is_enabled ? "生效中" : "已暂停"}
+              </span>
+            </div>
+            <h4>{reminder.title}</h4>
+            <p>{reminder.message || reminder.note_title}</p>
+            <footer>
+              <span>{formatDate(reminder.remind_at)} · {repeatRuleLabel(reminder)}</span>
+              <div>
+                <button className="ghost-action" disabled={isBusy} onClick={() => onToggle(reminder)} type="button">
+                  {reminder.is_enabled ? "暂停" : "启用"}
+                </button>
+                <button className="danger-action" disabled={isBusy} onClick={() => onDelete(reminder)} type="button">
+                  删除
+                </button>
+              </div>
+            </footer>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1639,6 +2026,137 @@ function defaultContentForType(noteType: StorageNoteType) {
   }
 
   return "<p>在右侧编辑内容，然后点击保存。</p>";
+}
+
+function defaultReminderDraft(note: Pick<NoteRecord, "note_type" | "title">): ReminderDraft {
+  const reminderType = defaultReminderTypeForNote(note.note_type);
+
+  return {
+    reminder_type: reminderType,
+    title: defaultReminderTitle(note.title, reminderType),
+    message: typeDefaultReminderMessage(note.note_type),
+    remind_at: toDatetimeLocalValue(new Date(Date.now() + 30 * 60 * 1000)),
+    repeat_rule: reminderType === "anniversary" ? "yearly" : "none",
+    custom_interval_days: 3,
+  };
+}
+
+function defaultReminderTypeForNote(noteType: StorageNoteType): ReminderType {
+  if (noteType === "todo") {
+    return "due";
+  }
+
+  if (noteType === "timeline") {
+    return "anniversary";
+  }
+
+  if (noteType === "rich_text") {
+    return "review";
+  }
+
+  return "once";
+}
+
+function defaultReminderTitle(title: string, reminderType: ReminderType) {
+  const fallback = title.trim() || "未命名便签";
+
+  if (reminderType === "due") {
+    return `${fallback} 截止提醒`;
+  }
+
+  if (reminderType === "anniversary") {
+    return `${fallback} 纪念日`;
+  }
+
+  if (reminderType === "review") {
+    return `${fallback} 复习提醒`;
+  }
+
+  if (reminderType === "repeat") {
+    return `${fallback} 重复提醒`;
+  }
+
+  return `${fallback} 提醒`;
+}
+
+function typeDefaultReminderMessage(noteType: StorageNoteType) {
+  if (noteType === "todo") {
+    return "待办事项即将到期。";
+  }
+
+  if (noteType === "timeline") {
+    return "这条时间轴记录到了回顾时间。";
+  }
+
+  if (noteType === "rich_text") {
+    return "这篇笔记到了复习时间。";
+  }
+
+  return "这条便签到了提醒时间。";
+}
+
+function reminderHintForNoteType(noteType: StorageNoteType) {
+  if (noteType === "todo") {
+    return "截止、重复、过期提醒";
+  }
+
+  if (noteType === "timeline") {
+    return "纪念日和回顾";
+  }
+
+  if (noteType === "rich_text") {
+    return "复习提醒";
+  }
+
+  return "指定时间提醒";
+}
+
+async function ensureNotificationPermission() {
+  let permissionGranted = await isPermissionGranted();
+
+  if (!permissionGranted) {
+    const permission = await requestPermission();
+    permissionGranted = permission === "granted";
+  }
+
+  return permissionGranted;
+}
+
+function reminderNotificationBody(reminder: ReminderRecord) {
+  const body = reminder.message.trim() || reminder.note_title;
+  return `${body}\n时间：${formatDate(reminder.remind_at)}`;
+}
+
+function reminderInputToRfc3339(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
+}
+
+function toDatetimeLocalValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function reminderTypeLabel(reminderType: ReminderType) {
+  return reminderTypes.find((item) => item.id === reminderType)?.label ?? "提醒";
+}
+
+function repeatRuleLabel(reminder: ReminderRecord) {
+  if (reminder.repeat_rule === "custom") {
+    return `每 ${reminder.custom_interval_days} 天`;
+  }
+
+  return repeatRules.find((item) => item.id === reminder.repeat_rule)?.label ?? "不重复";
 }
 
 function resolveFolderName(folders: FolderRecord[], folderId: string) {
