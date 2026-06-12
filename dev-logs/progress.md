@@ -390,3 +390,48 @@
 - 贴出窗口内容同步采用短间隔刷新和保存后刷新，后续可补充跨窗口事件广播以进一步减少延迟。
 - 贴出窗口复用了当前富文本编辑器，前端包体积仍有 Vite chunk 超过 500 kB 的提示，计划在性能优化阶段处理。
 - 便携版需求已写入文档，但实际便携目录切换和便携打包仍留到 Phase 11 实现。
+
+## 2026-06-13 Phase 7 贴边入口、托盘和启动行为
+
+### Completed
+
+- 主窗口改为默认隐藏，启动行为由 `startup_mode` 设置控制。
+- 新增贴边入口窗口 `edge-entry`，默认启动显示贴边入口。
+- 贴边入口支持左、右、上、下四个位置。
+- 鼠标进入贴边入口后展开，鼠标离开后收起。
+- 贴边入口支持快速打开全部、普通便签、待办、时间轴和富文本笔记视图。
+- 主页面新增启动方式设置：贴边入口、主页面、托盘。
+- 主页面新增贴边位置设置。
+- 主页面新增开机自启动开关。
+- 新增系统托盘菜单：打开主页面、显示贴边入口、退出。
+- 主窗口关闭时隐藏到后台，避免误关后无法从托盘继续打开。
+- 开机自启动通过 Windows 当前用户 Run 注册表项实现，不新增额外常驻进程。
+- 技术规范补充 Phase 7 实现说明。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `src-tauri/tauri.conf.json`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，5 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+
+### Risks
+
+- Phase 7 已实现基础贴边展开，不包含复杂动画和多显示器逐屏选择；当前按主显示器工作区定位。
+- 开机自启动使用当前用户注册表，适合普通安装版；便携版最终需要在 Phase 11 再确认是否默认关闭自启动。
+- 主窗口默认隐藏后，用户需要通过贴边入口或托盘打开主页面；这符合默认贴边入口需求。

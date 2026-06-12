@@ -167,6 +167,20 @@ Phase 6 已实现桌面贴出便签基础能力：
 - 应用启动时恢复已贴出窗口，并按需求自动重新置顶。
 - 删除便签进入回收站时，会同步取消该便签的贴出状态。
 
+Phase 7 已实现贴边入口、托盘和启动行为基础能力：
+
+- 主窗口配置为默认隐藏，启动行为由 `startup_mode` 设置决定。
+- 新增贴边入口窗口 `edge-entry`，使用独立 WebView 视图 `?view=edge`。
+- 贴边入口支持 `left`、`right`、`top`、`bottom` 四种位置。
+- 鼠标进入贴边入口时，前端调用 `set_edge_entry_expanded` 扩展窗口尺寸；鼠标离开后收起。
+- 新增 `open_main_window`：显示主窗口，并可通过事件让主页面切换到指定便签类型。
+- 新增 `open_edge_entry`：显示或创建贴边入口。
+- 新增 `set_edge_position`：保存贴边位置并重建入口窗口。
+- 新增系统托盘菜单：打开主页面、显示贴边入口、退出。
+- 开机自启动通过当前用户注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现。
+- 新增 `get_auto_start_enabled` 和 `set_auto_start_enabled` 命令。
+- 新增设置项：`edge_position`、`edge_entry_enabled`、`auto_start_enabled`。
+
 后续阶段再扩展：
 
 - `reminders`

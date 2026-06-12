@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
@@ -16,6 +17,8 @@ import { useEffect, useMemo, useState } from "react";
 type NoteType = "all" | "normal" | "todo" | "timeline" | "rich";
 type StorageNoteType = "normal" | "todo" | "timeline" | "rich_text";
 type ThemeMode = "light" | "dark" | "system";
+type StartupMode = "edge_entry" | "main_window" | "tray_only";
+type EdgePosition = "left" | "right" | "top" | "bottom";
 
 type AppPaths = {
   root_dir: string;
@@ -85,6 +88,12 @@ type StickyWindowRecord = {
   updated_at: string;
 };
 
+type SettingRecord = {
+  key: string;
+  value: string;
+  updated_at: string;
+};
+
 type EditorState = {
   id: string;
   note_type: StorageNoteType;
@@ -113,6 +122,19 @@ const themeModes: Array<{ id: ThemeMode; label: string }> = [
   { id: "light", label: "日间" },
   { id: "dark", label: "黑夜" },
   { id: "system", label: "跟随系统" },
+];
+
+const startupModes: Array<{ id: StartupMode; label: string }> = [
+  { id: "edge_entry", label: "贴边入口" },
+  { id: "main_window", label: "主页面" },
+  { id: "tray_only", label: "托盘" },
+];
+
+const edgePositions: Array<{ id: EdgePosition; label: string }> = [
+  { id: "left", label: "左" },
+  { id: "right", label: "右" },
+  { id: "top", label: "上" },
+  { id: "bottom", label: "下" },
 ];
 
 const typeLabels: Record<StorageNoteType, string> = {
@@ -166,6 +188,10 @@ export default function App() {
     return <StickyNoteWindow noteId={params.get("noteId") ?? ""} />;
   }
 
+  if (view === "edge") {
+    return <EdgeEntryWindow position={(params.get("position") ?? "right") as EdgePosition} />;
+  }
+
   return <MainApp />;
 }
 
@@ -180,6 +206,8 @@ function MainApp() {
   const [recycleItems, setRecycleItems] = useState<RecycleItemRecord[]>([]);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
   const [stickyWindows, setStickyWindows] = useState<StickyWindowRecord[]>([]);
+  const [settings, setSettings] = useState<SettingRecord[]>([]);
+  const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [pendingImageAttachments, setPendingImageAttachments] = useState<AttachmentRecord[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
@@ -200,11 +228,44 @@ function MainApp() {
     () => new Set(stickyWindows.map((stickyWindow) => stickyWindow.note_id)),
     [stickyWindows],
   );
+  const settingMap = useMemo(
+    () => new Map(settings.map((setting) => [setting.key, setting.value])),
+    [settings],
+  );
+  const startupMode = normalizeStartupMode(settingMap.get("startup_mode"));
+  const edgePosition = normalizeEdgePosition(settingMap.get("edge_position"));
   const isSelectedNotePosted = editorState ? postedStickyIds.has(editorState.id) : false;
 
   useEffect(() => {
     void refreshStorage();
   }, [activeType, activeFolderId, isRecycleView, query]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    listen<string>("select_note_type", (event) => {
+      const nextType = normalizeNoteTypeForMain(event.payload);
+      setIsRecycleView(false);
+      setActiveType(nextType);
+    })
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+
+        unlisten = cleanup;
+      })
+      .catch((error) => {
+        setStorageError(error instanceof Error ? error.message : String(error));
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedNote) {
@@ -282,7 +343,7 @@ function MainApp() {
       const folderId = activeFolderId === "all" ? undefined : activeFolderId;
       const titleQuery = query.trim() || undefined;
       const status = await invoke<StorageStatus>("initialize_storage");
-      const [folderList, noteList, recycleList, stickyList] = await Promise.all([
+      const [folderList, noteList, recycleList, stickyList, settingList, autoStartState] = await Promise.all([
         invoke<FolderRecord[]>("list_folders"),
         invoke<NoteRecord[]>("list_notes", {
           request: {
@@ -293,6 +354,8 @@ function MainApp() {
         }),
         invoke<RecycleItemRecord[]>("list_recycle_items"),
         invoke<StickyWindowRecord[]>("list_sticky_windows"),
+        invoke<SettingRecord[]>("list_settings"),
+        invoke<boolean>("get_auto_start_enabled"),
       ]);
 
       setStorageStatus(status);
@@ -300,6 +363,8 @@ function MainApp() {
       setNotes(noteList);
       setRecycleItems(recycleList);
       setStickyWindows(stickyList);
+      setSettings(settingList);
+      setAutoStartEnabled(autoStartState);
 
       if (!options.keepSelection) {
         setSelectedNoteId((currentId) => {
@@ -449,6 +514,60 @@ function MainApp() {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleSetThemeMode(nextThemeMode: ThemeMode) {
+    setThemeMode(nextThemeMode);
+    try {
+      await invoke<SettingRecord>("set_setting", {
+        request: {
+          key: "theme_mode",
+          value: nextThemeMode,
+        },
+      });
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleSetStartupMode(nextStartupMode: StartupMode) {
+    try {
+      await invoke<SettingRecord>("set_setting", {
+        request: {
+          key: "startup_mode",
+          value: nextStartupMode,
+        },
+      });
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleSetEdgePosition(nextEdgePosition: EdgePosition) {
+    try {
+      await invoke<SettingRecord>("set_edge_position", {
+        request: {
+          position: nextEdgePosition,
+        },
+      });
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleSetAutoStartEnabled(enabled: boolean) {
+    try {
+      const setting = await invoke<SettingRecord>("set_auto_start_enabled", {
+        request: { enabled },
+      });
+      setAutoStartEnabled(enabled);
+      setSettings((currentSettings) => upsertSetting(currentSettings, setting));
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -854,13 +973,60 @@ function MainApp() {
                   <button
                     className={item.id === themeMode ? "selected" : ""}
                     key={item.id}
-                    onClick={() => setThemeMode(item.id)}
+                    onClick={() => void handleSetThemeMode(item.id)}
                     type="button"
                   >
                     {item.label}
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="panel-heading compact-heading">
+                <h3>启动与入口</h3>
+              </div>
+
+              <div className="setting-row">
+                <span>启动方式</span>
+                <div className="theme-options setting-options" role="radiogroup" aria-label="启动方式">
+                  {startupModes.map((item) => (
+                    <button
+                      className={item.id === startupMode ? "selected" : ""}
+                      key={item.id}
+                      onClick={() => void handleSetStartupMode(item.id)}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="setting-row">
+                <span>贴边位置</span>
+                <div className="theme-options setting-options compact-options" role="radiogroup" aria-label="贴边位置">
+                  {edgePositions.map((item) => (
+                    <button
+                      className={item.id === edgePosition ? "selected" : ""}
+                      key={item.id}
+                      onClick={() => void handleSetEdgePosition(item.id)}
+                      type="button"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="toggle-row">
+                <span>开机自启动</span>
+                <input
+                  checked={autoStartEnabled}
+                  onChange={(event) => void handleSetAutoStartEnabled(event.target.checked)}
+                  type="checkbox"
+                />
+              </label>
             </div>
 
             <div className="status-list">
@@ -898,6 +1064,54 @@ function MainApp() {
           </aside>
         </section>
       </section>
+    </main>
+  );
+}
+
+function EdgeEntryWindow({ position }: { position: EdgePosition }) {
+  const edgePosition = normalizeEdgePosition(position);
+  const [expanded, setExpanded] = useState(false);
+  document.documentElement.dataset.theme = resolveTheme("system");
+
+  async function setExpandedState(nextExpanded: boolean) {
+    setExpanded(nextExpanded);
+    try {
+      await invoke("set_edge_entry_expanded", {
+        request: { expanded: nextExpanded },
+      });
+    } catch {
+      setExpanded(false);
+    }
+  }
+
+  async function openMain(noteType: NoteType = "all") {
+    try {
+      await invoke("open_main_window", {
+        request: { note_type: noteType },
+      });
+      await setExpandedState(false);
+    } catch {
+      await setExpandedState(false);
+    }
+  }
+
+  return (
+    <main
+      className={expanded ? `edge-shell ${edgePosition} expanded` : `edge-shell ${edgePosition}`}
+      onMouseEnter={() => void setExpandedState(true)}
+      onMouseLeave={() => void setExpandedState(false)}
+    >
+      <button className="edge-tab" onClick={() => void openMain("all")} title="xBaoNotes" type="button">
+        XB
+      </button>
+
+      <div className="edge-actions" aria-label="便签快速入口">
+        <button onClick={() => void openMain("normal")} type="button">普通</button>
+        <button onClick={() => void openMain("todo")} type="button">待办</button>
+        <button onClick={() => void openMain("timeline")} type="button">时间轴</button>
+        <button onClick={() => void openMain("rich")} type="button">富文本</button>
+        <button className="edge-main-action" onClick={() => void openMain("all")} type="button">主页面</button>
+      </div>
     </main>
   );
 }
@@ -1375,6 +1589,40 @@ function toStorageNoteType(noteType: NoteType): StorageNoteType {
   }
 
   return noteType;
+}
+
+function normalizeNoteTypeForMain(value: string): NoteType {
+  if (value === "normal" || value === "todo" || value === "timeline" || value === "rich") {
+    return value;
+  }
+
+  return "all";
+}
+
+function normalizeStartupMode(value: string | undefined): StartupMode {
+  if (value === "main_window" || value === "tray_only") {
+    return value;
+  }
+
+  return "edge_entry";
+}
+
+function normalizeEdgePosition(value: string | undefined): EdgePosition {
+  if (value === "left" || value === "top" || value === "bottom") {
+    return value;
+  }
+
+  return "right";
+}
+
+function upsertSetting(settings: SettingRecord[], nextSetting: SettingRecord) {
+  const exists = settings.some((setting) => setting.key === nextSetting.key);
+
+  if (!exists) {
+    return [...settings, nextSetting];
+  }
+
+  return settings.map((setting) => (setting.key === nextSetting.key ? nextSetting : setting));
 }
 
 function defaultContentForType(noteType: StorageNoteType) {

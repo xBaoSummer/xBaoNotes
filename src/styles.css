@@ -697,6 +697,52 @@ h2 {
   margin-top: 18px;
 }
 
+.settings-block {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.setting-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+
+.setting-row > span,
+.toggle-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.setting-options {
+  width: 100%;
+}
+
+.compact-options button {
+  min-width: 42px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
 .compact-heading {
   margin-bottom: 10px;
 }
@@ -835,6 +881,105 @@ h2 {
 
 .sticky-error {
   margin: 0;
+}
+
+.edge-shell {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface-strong), var(--accent-soft) 18%);
+  box-shadow: var(--shadow);
+  user-select: none;
+}
+
+.edge-shell.left,
+.edge-shell.right {
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: stretch;
+  border-radius: 10px 0 0 10px;
+}
+
+.edge-shell.left {
+  border-radius: 0 10px 10px 0;
+}
+
+.edge-shell.top,
+.edge-shell.bottom {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  border-radius: 0 0 10px 10px;
+}
+
+.edge-shell.bottom {
+  border-radius: 10px 10px 0 0;
+}
+
+.edge-tab {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-width: 34px;
+  height: 100%;
+  border: 0;
+  color: white;
+  background: linear-gradient(135deg, #2563eb, #0f766e);
+  font-weight: 800;
+}
+
+.edge-shell.top .edge-tab,
+.edge-shell.bottom .edge-tab {
+  min-width: 54px;
+}
+
+.edge-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  opacity: 0;
+  transform: translateX(8px);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.edge-shell.top .edge-actions,
+.edge-shell.bottom .edge-actions {
+  transform: translateY(6px);
+}
+
+.edge-shell.expanded .edge-actions {
+  opacity: 1;
+  transform: none;
+}
+
+.edge-shell.left .edge-actions,
+.edge-shell.right .edge-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.edge-actions button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-strong);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.edge-actions button:hover {
+  background: var(--accent-soft);
+}
+
+.edge-main-action {
+  color: white !important;
+  border-color: transparent !important;
+  background: var(--accent) !important;
 }
 
 .error-text {

@@ -740,7 +740,13 @@ pub fn set_setting(request: SetSettingRequest) -> Result<SettingRecord, String> 
 
     if !matches!(
         key,
-        "theme_mode" | "startup_mode" | "backup_dir" | "recycle_bin_dir"
+        "theme_mode"
+            | "startup_mode"
+            | "backup_dir"
+            | "recycle_bin_dir"
+            | "edge_position"
+            | "edge_entry_enabled"
+            | "auto_start_enabled"
     ) {
         return Err("不支持的设置项".to_string());
     }
@@ -1060,6 +1066,9 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
 fn ensure_default_settings(connection: &Connection, paths: &AppPaths) -> Result<(), String> {
     set_default_setting(connection, "theme_mode", "system")?;
     set_default_setting(connection, "startup_mode", "edge_entry")?;
+    set_default_setting(connection, "edge_position", "right")?;
+    set_default_setting(connection, "edge_entry_enabled", "true")?;
+    set_default_setting(connection, "auto_start_enabled", "false")?;
     set_default_setting(connection, "backup_dir", &paths.backup_dir)?;
     set_default_setting(connection, "recycle_bin_dir", &paths.recycle_bin_dir)
 }
@@ -1457,7 +1466,7 @@ mod tests {
         ensure_default_settings(&connection, &paths).expect("seed settings");
         let default_folder_id = ensure_default_folder(&connection).expect("seed folder");
 
-        assert_eq!(count_rows(&connection, "settings").unwrap(), 4);
+        assert_eq!(count_rows(&connection, "settings").unwrap(), 7);
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
         assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
