@@ -105,6 +105,14 @@ Phase 2 已实现基础表：
 - `folders`
 - `notes`
 
+Phase 3 已实现基础命令：
+
+- `list_notes`：支持按类型、文件夹、标题查询。
+- `create_note`：创建本地便签。
+- `update_note`：编辑标题、内容、类型和文件夹。
+- `set_note_pinned`：置顶和取消置顶。
+- `create_folder`：创建文件夹。
+
 后续阶段再扩展：
 
 - `attachments`

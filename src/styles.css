@@ -44,7 +44,9 @@ body,
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -134,7 +136,8 @@ h1 {
 
 .folder-item,
 .segmented-control button,
-.theme-options button {
+.theme-options button,
+.ghost-action {
   border: 1px solid transparent;
   color: var(--text);
   background: transparent;
@@ -170,6 +173,40 @@ h1 {
 
 .edge-entry-preview span {
   color: var(--muted);
+}
+
+.folder-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.folder-create input,
+.editor-form input,
+.editor-form select,
+.editor-form textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-strong);
+  outline: none;
+}
+
+.folder-create input {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.folder-create button,
+.ghost-action {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-strong);
 }
 
 .workspace {
@@ -211,6 +248,10 @@ h2 {
   color: white;
   background: var(--accent);
   font-weight: 600;
+}
+
+.full-width {
+  width: 100%;
 }
 
 .toolbar {
@@ -278,10 +319,19 @@ h2 {
 }
 
 .note-card {
+  width: 100%;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
+  color: var(--text);
   background: var(--surface-strong);
+  text-align: left;
+}
+
+.note-card:hover,
+.note-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .note-card h4 {
@@ -340,6 +390,39 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-strong);
+}
+
+.editor-form {
+  display: grid;
+  gap: 12px;
+}
+
+.editor-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.editor-form input,
+.editor-form select {
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.editor-form textarea {
+  min-height: 180px;
+  resize: vertical;
+  padding: 10px;
+  line-height: 1.55;
+}
+
+.theme-block {
+  margin-top: 18px;
+}
+
+.compact-heading {
+  margin-bottom: 10px;
 }
 
 .empty-state {

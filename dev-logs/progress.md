@@ -213,3 +213,44 @@
 
 - 当前只是数据层基础闭环，还没有完整编辑、重命名、删除、回收站恢复等主页面管理能力。
 - 本机没有 `sqlite3` 命令行工具，数据库表验证通过 Rust 单元测试完成。
+
+## 2026-06-12 Phase 3 主页面基础管理
+
+### Completed
+
+- 扩展 SQLite 查询能力，`list_notes` 支持按类型、文件夹、标题搜索。
+- 新增便签更新接口 `update_note`，支持修改标题、内容、类型和文件夹。
+- 新增置顶接口 `set_note_pinned`，支持置顶和取消置顶。
+- 主页面左侧改为真实文件夹列表。
+- 支持创建文件夹。
+- 支持按文件夹筛选便签。
+- 支持按便签类型筛选便签。
+- 支持标题搜索走 SQLite 查询。
+- 支持选择便签并在右侧编辑。
+- 支持保存便签编辑内容。
+- 支持在右侧置顶/取消置顶。
+- 保留回收站入口但禁用，删除逻辑留到 Phase 4。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，2 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- Release 程序已启动并正常关闭。
+
+### Risks
+
+- 当前未实现删除和回收站恢复；按照数据安全原则留到 Phase 4 单独实现。
+- 当前编辑器仍是普通文本框，富文本编辑器留到 Phase 5。
+- Phase 3 提交已在本地完成，但 GitHub 推送因网络连接 `github.com:443` 超时暂未完成。

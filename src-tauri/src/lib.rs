@@ -1,8 +1,8 @@
 mod storage;
 
 use storage::{
-    CreateFolderRequest, CreateNoteRequest, FolderRecord, NoteRecord, SetSettingRequest,
-    SettingRecord, StorageStatus,
+    CreateFolderRequest, CreateNoteRequest, FolderRecord, ListNotesRequest, NoteRecord,
+    SetNotePinnedRequest, SetSettingRequest, SettingRecord, StorageStatus, UpdateNoteRequest,
 };
 
 #[tauri::command]
@@ -36,8 +36,18 @@ fn create_note(request: CreateNoteRequest) -> Result<NoteRecord, String> {
 }
 
 #[tauri::command]
-fn list_notes() -> Result<Vec<NoteRecord>, String> {
-    storage::list_notes()
+fn list_notes(request: ListNotesRequest) -> Result<Vec<NoteRecord>, String> {
+    storage::list_notes(request)
+}
+
+#[tauri::command]
+fn update_note(request: UpdateNoteRequest) -> Result<NoteRecord, String> {
+    storage::update_note(request)
+}
+
+#[tauri::command]
+fn set_note_pinned(request: SetNotePinnedRequest) -> Result<NoteRecord, String> {
+    storage::set_note_pinned(request)
 }
 
 #[tauri::command]
@@ -61,6 +71,8 @@ pub fn run() {
             create_folder,
             create_note,
             list_notes,
+            update_note,
+            set_note_pinned,
             list_settings,
             set_setting
         ])

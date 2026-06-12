@@ -68,6 +68,28 @@ pub struct CreateNoteRequest {
     pub folder_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListNotesRequest {
+    pub note_type: Option<String>,
+    pub folder_id: Option<String>,
+    pub title_query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateNoteRequest {
+    pub id: String,
+    pub note_type: String,
+    pub title: String,
+    pub content: String,
+    pub folder_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetNotePinnedRequest {
+    pub id: String,
+    pub is_pinned: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SetSettingRequest {
     pub key: String,
@@ -188,24 +210,102 @@ pub fn create_note(request: CreateNoteRequest) -> Result<NoteRecord, String> {
     get_note(&connection, &id)
 }
 
-pub fn list_notes() -> Result<Vec<NoteRecord>, String> {
+pub fn list_notes(request: ListNotesRequest) -> Result<Vec<NoteRecord>, String> {
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
+    let note_type = normalize_optional_note_type(request.note_type)?;
+    let folder_id = normalize_optional_text(request.folder_id);
+    let title_query = normalize_optional_text(request.title_query).map(|value| format!("%{value}%"));
+
     let mut statement = connection
         .prepare(
             "SELECT id, type, title, content, folder_id, is_pinned, is_deleted,
                     created_at, updated_at, deleted_at
              FROM notes
              WHERE is_deleted = 0
+                AND (?1 IS NULL OR type = ?1)
+                AND (?2 IS NULL OR folder_id = ?2)
+                AND (?3 IS NULL OR title LIKE ?3 COLLATE NOCASE)
              ORDER BY is_pinned DESC, updated_at DESC",
         )
         .map_err(|error| error.to_string())?;
 
     let rows = statement
-        .query_map([], map_note_row)
+        .query_map(params![note_type, folder_id, title_query], map_note_row)
         .map_err(|error| error.to_string())?;
 
     collect_rows(rows)
+}
+
+pub fn update_note(request: UpdateNoteRequest) -> Result<NoteRecord, String> {
+    let id = request.id.trim();
+    let note_type = normalize_note_type(&request.note_type)?;
+    let title = request.title.trim();
+    let folder_id = request.folder_id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    if title.is_empty() {
+        return Err("标题不能为空".to_string());
+    }
+
+    if folder_id.is_empty() {
+        return Err("文件夹不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    ensure_folder_exists(&connection, folder_id)?;
+    let now = Utc::now().to_rfc3339();
+
+    let changed = connection
+        .execute(
+            "UPDATE notes
+             SET type = ?1,
+                 title = ?2,
+                 content = ?3,
+                 folder_id = ?4,
+                 updated_at = ?5
+             WHERE id = ?6 AND is_deleted = 0",
+            params![note_type, title, request.content, folder_id, now, id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("未找到可编辑的便签".to_string());
+    }
+
+    get_note(&connection, id)
+}
+
+pub fn set_note_pinned(request: SetNotePinnedRequest) -> Result<NoteRecord, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    let pinned = if request.is_pinned { 1 } else { 0 };
+    let changed = connection
+        .execute(
+            "UPDATE notes
+             SET is_pinned = ?1,
+                 updated_at = ?2
+             WHERE id = ?3 AND is_deleted = 0",
+            params![pinned, now, id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("未找到可置顶的便签".to_string());
+    }
+
+    get_note(&connection, id)
 }
 
 pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
@@ -435,6 +535,22 @@ fn get_setting(connection: &Connection, key: &str) -> Result<SettingRecord, Stri
         .map_err(|error| error.to_string())
 }
 
+fn ensure_folder_exists(connection: &Connection, folder_id: &str) -> Result<(), String> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM folders WHERE id = ?1 AND is_deleted = 0",
+            params![folder_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    if count == 0 {
+        return Err("文件夹不存在".to_string());
+    }
+
+    Ok(())
+}
+
 fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
     Ok(NoteRecord {
         id: row.get(0)?,
@@ -458,6 +574,20 @@ fn normalize_note_type(value: &str) -> Result<&'static str, String> {
         "rich" | "rich_text" => Ok("rich_text"),
         _ => Err("不支持的便签类型".to_string()),
     }
+}
+
+fn normalize_optional_note_type(value: Option<String>) -> Result<Option<String>, String> {
+    match normalize_optional_text(value) {
+        Some(value) if value == "all" => Ok(None),
+        Some(value) => Ok(Some(normalize_note_type(&value)?.to_string())),
+        None => Ok(None),
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 fn collect_rows<T>(
@@ -494,5 +624,45 @@ mod tests {
         assert_eq!(count_rows(&connection, "settings").unwrap(), 4);
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
         assert!(!default_folder_id.is_empty());
+    }
+
+    #[test]
+    fn note_management_updates_and_filters_records() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        create_schema(&connection).expect("create schema");
+        let folder_id = ensure_default_folder(&connection).expect("seed folder");
+        let now = Utc::now().to_rfc3339();
+        let note_id = Uuid::new_v4().to_string();
+
+        connection
+            .execute(
+                "INSERT INTO notes (
+                    id, type, title, content, folder_id, is_pinned, is_deleted,
+                    created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, 'normal', '购物清单', '牛奶', ?2, 0, 0, ?3, ?3, NULL)",
+                params![note_id, folder_id, now],
+            )
+            .expect("insert note");
+
+        ensure_folder_exists(&connection, &folder_id).expect("folder exists");
+        let note = get_note(&connection, &note_id).expect("read note");
+
+        assert_eq!(note.title, "购物清单");
+        assert_eq!(note.note_type, "normal");
+        assert!(!note.is_pinned);
+
+        connection
+            .execute(
+                "UPDATE notes SET title = '工作清单', type = 'todo', is_pinned = 1 WHERE id = ?1",
+                params![note_id],
+            )
+            .expect("update note");
+
+        let updated_note = get_note(&connection, &note_id).expect("read updated note");
+
+        assert_eq!(updated_note.title, "工作清单");
+        assert_eq!(updated_note.note_type, "todo");
+        assert!(updated_note.is_pinned);
     }
 }

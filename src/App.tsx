@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 
 type NoteType = "all" | "normal" | "todo" | "timeline" | "rich";
+type StorageNoteType = "normal" | "todo" | "timeline" | "rich_text";
 type ThemeMode = "light" | "dark" | "system";
 
 type AppPaths = {
@@ -29,7 +30,7 @@ type FolderRecord = {
 
 type NoteRecord = {
   id: string;
-  note_type: "normal" | "todo" | "timeline" | "rich_text";
+  note_type: StorageNoteType;
   title: string;
   content: string;
   folder_id: string;
@@ -40,6 +41,15 @@ type NoteRecord = {
   deleted_at: string | null;
 };
 
+type EditorState = {
+  id: string;
+  note_type: StorageNoteType;
+  title: string;
+  content: string;
+  folder_id: string;
+  is_pinned: boolean;
+};
+
 const noteTypes: Array<{ id: NoteType; label: string }> = [
   { id: "all", label: "全部" },
   { id: "normal", label: "普通便签" },
@@ -48,13 +58,20 @@ const noteTypes: Array<{ id: NoteType; label: string }> = [
   { id: "rich", label: "富文本笔记" },
 ];
 
+const editableNoteTypes: Array<{ id: StorageNoteType; label: string }> = [
+  { id: "normal", label: "普通便签" },
+  { id: "todo", label: "待办" },
+  { id: "timeline", label: "时间轴" },
+  { id: "rich_text", label: "富文本笔记" },
+];
+
 const themeModes: Array<{ id: ThemeMode; label: string }> = [
   { id: "light", label: "日间" },
   { id: "dark", label: "黑夜" },
   { id: "system", label: "跟随系统" },
 ];
 
-const typeLabels: Record<NoteRecord["note_type"], string> = {
+const typeLabels: Record<StorageNoteType, string> = {
   normal: "普通便签",
   todo: "待办",
   timeline: "时间轴",
@@ -75,48 +92,84 @@ function resolveTheme(theme: ThemeMode) {
 
 export default function App() {
   const [activeType, setActiveType] = useState<NoteType>("all");
+  const [activeFolderId, setActiveFolderId] = useState<string>("all");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
   const [query, setQuery] = useState("");
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [notes, setNotes] = useState<NoteRecord[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [editorState, setEditorState] = useState<EditorState | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [folderName, setFolderName] = useState("");
 
   const resolvedTheme = resolveTheme(themeMode);
   document.documentElement.dataset.theme = resolvedTheme;
 
+  const selectedNote = useMemo(
+    () => notes.find((note) => note.id === selectedNoteId) ?? null,
+    [notes, selectedNoteId],
+  );
+
   useEffect(() => {
     void refreshStorage();
-  }, []);
+  }, [activeType, activeFolderId, query]);
 
-  const filteredNotes = useMemo(() => {
-    return notes.filter((note) => {
-      const matchesType = activeType === "all" || toUiNoteType(note.note_type) === activeType;
-      const matchesQuery = note.title.toLowerCase().includes(query.trim().toLowerCase());
-      return matchesType && matchesQuery;
+  useEffect(() => {
+    if (!selectedNote) {
+      setEditorState(null);
+      return;
+    }
+
+    setEditorState({
+      id: selectedNote.id,
+      note_type: selectedNote.note_type,
+      title: selectedNote.title,
+      content: selectedNote.content,
+      folder_id: selectedNote.folder_id,
+      is_pinned: selectedNote.is_pinned,
     });
-  }, [activeType, notes, query]);
+  }, [selectedNote]);
 
-  async function refreshStorage() {
+  async function refreshStorage(options: { keepSelection?: boolean } = {}) {
     try {
       setStorageError(null);
-      const [status, folderList, noteList] = await Promise.all([
-        invoke<StorageStatus>("initialize_storage"),
+      const noteType = activeType === "all" ? undefined : toStorageNoteType(activeType);
+      const folderId = activeFolderId === "all" ? undefined : activeFolderId;
+      const titleQuery = query.trim() || undefined;
+      const status = await invoke<StorageStatus>("initialize_storage");
+      const [folderList, noteList] = await Promise.all([
         invoke<FolderRecord[]>("list_folders"),
-        invoke<NoteRecord[]>("list_notes"),
+        invoke<NoteRecord[]>("list_notes", {
+          request: {
+            note_type: noteType,
+            folder_id: folderId,
+            title_query: titleQuery,
+          },
+        }),
       ]);
 
       setStorageStatus(status);
       setFolders(folderList);
       setNotes(noteList);
+
+      if (!options.keepSelection) {
+        setSelectedNoteId((currentId) => {
+          if (currentId && noteList.some((note) => note.id === currentId)) {
+            return currentId;
+          }
+
+          return noteList[0]?.id ?? null;
+        });
+      }
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
 
   async function handleCreateNote() {
-    setIsCreating(true);
+    setIsBusy(true);
     try {
       const createdAt = new Date().toLocaleString("zh-CN", {
         hour12: false,
@@ -125,21 +178,94 @@ export default function App() {
         hour: "2-digit",
         minute: "2-digit",
       });
-
-      await invoke<NoteRecord>("create_note", {
+      const noteType = activeType === "all" ? "normal" : toStorageNoteType(activeType);
+      const createdNote = await invoke<NoteRecord>("create_note", {
         request: {
-          note_type: activeType === "all" ? "normal" : toStorageNoteType(activeType),
+          note_type: noteType,
           title: `新便签 ${createdAt}`,
-          content: "这条便签已保存到本地 SQLite 数据库。",
-          folder_id: folders[0]?.id,
+          content: "在右侧编辑内容，然后点击保存。",
+          folder_id: activeFolderId === "all" ? folders[0]?.id : activeFolderId,
         },
       });
 
+      setSelectedNoteId(createdNote.id);
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleCreateFolder() {
+    const name = folderName.trim();
+
+    if (!name) {
+      setStorageError("文件夹名称不能为空");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const folder = await invoke<FolderRecord>("create_folder", {
+        request: { name },
+      });
+      setFolderName("");
+      setActiveFolderId(folder.id);
       await refreshStorage();
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
-      setIsCreating(false);
+      setIsBusy(false);
+    }
+  }
+
+  async function handleSaveNote() {
+    if (!editorState) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const updatedNote = await invoke<NoteRecord>("update_note", {
+        request: {
+          id: editorState.id,
+          note_type: editorState.note_type,
+          title: editorState.title,
+          content: editorState.content,
+          folder_id: editorState.folder_id,
+        },
+      });
+
+      setSelectedNoteId(updatedNote.id);
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleTogglePinned() {
+    if (!editorState) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const updatedNote = await invoke<NoteRecord>("set_note_pinned", {
+        request: {
+          id: editorState.id,
+          is_pinned: !editorState.is_pinned,
+        },
+      });
+
+      setSelectedNoteId(updatedNote.id);
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -155,12 +281,35 @@ export default function App() {
         </div>
 
         <nav className="folder-list" aria-label="文件夹">
-          <button className="folder-item active" type="button">全部便签</button>
-          <button className="folder-item" type="button">默认文件夹</button>
-          <button className="folder-item" type="button">工作</button>
-          <button className="folder-item" type="button">项目日志</button>
-          <button className="folder-item" type="button">回收站</button>
+          <button
+            className={activeFolderId === "all" ? "folder-item active" : "folder-item"}
+            onClick={() => setActiveFolderId("all")}
+            type="button"
+          >
+            全部便签
+          </button>
+          {folders.map((folder) => (
+            <button
+              className={activeFolderId === folder.id ? "folder-item active" : "folder-item"}
+              key={folder.id}
+              onClick={() => setActiveFolderId(folder.id)}
+              type="button"
+            >
+              {folder.name}
+            </button>
+          ))}
+          <button className="folder-item" disabled type="button">回收站</button>
         </nav>
+
+        <div className="folder-create">
+          <input
+            aria-label="新建文件夹名称"
+            onChange={(event) => setFolderName(event.target.value)}
+            placeholder="新建文件夹"
+            value={folderName}
+          />
+          <button disabled={isBusy} onClick={handleCreateFolder} type="button">添加</button>
+        </div>
 
         <section className="edge-entry-preview" aria-label="贴边入口预览">
           <span>贴边入口</span>
@@ -171,11 +320,11 @@ export default function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Phase 1</p>
+            <p className="eyebrow">Phase 3</p>
             <h2>便签工作台</h2>
           </div>
-          <button className="primary-action" disabled={isCreating} onClick={handleCreateNote} type="button">
-            {isCreating ? "保存中" : "新建便签"}
+          <button className="primary-action" disabled={isBusy} onClick={handleCreateNote} type="button">
+            {isBusy ? "处理中" : "新建便签"}
           </button>
         </header>
 
@@ -207,19 +356,24 @@ export default function App() {
           <div className="notes-panel" aria-label="便签列表">
             <div className="panel-heading">
               <h3>列表</h3>
-              <span>{filteredNotes.length} 条</span>
+              <span>{notes.length} 条</span>
             </div>
 
             <div className="note-list">
-              {filteredNotes.length === 0 ? (
+              {notes.length === 0 ? (
                 <div className="empty-state">
                   <strong>暂无便签</strong>
                   <span>点击“新建便签”会写入本地 SQLite 数据库。</span>
                 </div>
               ) : null}
 
-              {filteredNotes.map((note) => (
-                <article className="note-card" key={note.id}>
+              {notes.map((note) => (
+                <button
+                  className={note.id === selectedNoteId ? "note-card selected" : "note-card"}
+                  key={note.id}
+                  onClick={() => setSelectedNoteId(note.id)}
+                  type="button"
+                >
                   <div className="note-card-header">
                     <span className="type-pill">{typeLabels[note.note_type]}</span>
                     {note.is_pinned ? <span className="pin-label">置顶</span> : null}
@@ -230,40 +384,112 @@ export default function App() {
                     <span>{resolveFolderName(folders, note.folder_id)}</span>
                     <span>{formatDate(note.updated_at)}</span>
                   </footer>
-                </article>
+                </button>
               ))}
             </div>
           </div>
 
-          <aside className="inspector-panel" aria-label="设置预览">
+          <aside className="inspector-panel" aria-label="便签编辑">
             <div className="panel-heading">
-              <h3>外观</h3>
-            </div>
-            <div className="theme-options" role="radiogroup" aria-label="主题模式">
-              {themeModes.map((item) => (
-                <button
-                  className={item.id === themeMode ? "selected" : ""}
-                  key={item.id}
-                  onClick={() => setThemeMode(item.id)}
-                  type="button"
-                >
-                  {item.label}
+              <h3>编辑</h3>
+              {editorState ? (
+                <button className="ghost-action" disabled={isBusy} onClick={handleTogglePinned} type="button">
+                  {editorState.is_pinned ? "取消置顶" : "置顶"}
                 </button>
-              ))}
+              ) : null}
+            </div>
+
+            {editorState ? (
+              <div className="editor-form">
+                <label>
+                  标题
+                  <input
+                    onChange={(event) =>
+                      setEditorState((current) =>
+                        current ? { ...current, title: event.target.value } : current,
+                      )
+                    }
+                    value={editorState.title}
+                  />
+                </label>
+
+                <label>
+                  类型
+                  <select
+                    onChange={(event) =>
+                      setEditorState((current) =>
+                        current ? { ...current, note_type: event.target.value as StorageNoteType } : current,
+                      )
+                    }
+                    value={editorState.note_type}
+                  >
+                    {editableNoteTypes.map((item) => (
+                      <option key={item.id} value={item.id}>{item.label}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  文件夹
+                  <select
+                    onChange={(event) =>
+                      setEditorState((current) =>
+                        current ? { ...current, folder_id: event.target.value } : current,
+                      )
+                    }
+                    value={editorState.folder_id}
+                  >
+                    {folders.map((folder) => (
+                      <option key={folder.id} value={folder.id}>{folder.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  内容
+                  <textarea
+                    onChange={(event) =>
+                      setEditorState((current) =>
+                        current ? { ...current, content: event.target.value } : current,
+                      )
+                    }
+                    value={editorState.content}
+                  />
+                </label>
+
+                <button className="primary-action full-width" disabled={isBusy} onClick={handleSaveNote} type="button">
+                  保存
+                </button>
+              </div>
+            ) : (
+              <div className="empty-state">
+                <strong>请选择便签</strong>
+                <span>左侧选择一条便签后，可以编辑标题、类型、文件夹和内容。</span>
+              </div>
+            )}
+
+            <div className="theme-block">
+              <div className="panel-heading compact-heading">
+                <h3>外观</h3>
+              </div>
+              <div className="theme-options" role="radiogroup" aria-label="主题模式">
+                {themeModes.map((item) => (
+                  <button
+                    className={item.id === themeMode ? "selected" : ""}
+                    key={item.id}
+                    onClick={() => setThemeMode(item.id)}
+                    type="button"
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="status-list">
               <div>
-                <span>默认入口</span>
-                <strong>贴边隐藏</strong>
-              </div>
-              <div>
                 <span>数据模式</span>
                 <strong>{storageStatus ? "SQLite 已初始化" : "初始化中"}</strong>
-              </div>
-              <div>
-                <span>技术底座</span>
-                <strong>Tauri 2</strong>
               </div>
               <div>
                 <span>文件夹</span>
@@ -278,8 +504,6 @@ export default function App() {
             <div className="storage-panel">
               <h4>本地数据目录</h4>
               <code>{storageStatus?.paths.root_dir ?? "正在创建..."}</code>
-              <h4>数据库</h4>
-              <code>{storageStatus?.paths.database_path ?? "正在初始化..."}</code>
               {storageError ? <p className="error-text">{storageError}</p> : null}
             </div>
           </aside>
@@ -289,12 +513,16 @@ export default function App() {
   );
 }
 
-function toUiNoteType(noteType: NoteRecord["note_type"]): NoteType {
-  return noteType === "rich_text" ? "rich" : noteType;
-}
+function toStorageNoteType(noteType: NoteType): StorageNoteType {
+  if (noteType === "rich") {
+    return "rich_text";
+  }
 
-function toStorageNoteType(noteType: NoteType) {
-  return noteType === "rich" ? "rich_text" : noteType;
+  if (noteType === "all") {
+    return "normal";
+  }
+
+  return noteType;
 }
 
 function resolveFolderName(folders: FolderRecord[], folderId: string) {
