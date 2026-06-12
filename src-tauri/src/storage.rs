@@ -77,6 +77,19 @@ pub struct AttachmentRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct StickyWindowRecord {
+    pub note_id: String,
+    pub is_posted: bool,
+    pub is_always_on_top: bool,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateFolderRequest {
     pub name: String,
@@ -134,6 +147,21 @@ pub struct SetSettingRequest {
     pub value: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetStickyAlwaysOnTopRequest {
+    pub note_id: String,
+    pub is_always_on_top: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveStickyBoundsRequest {
+    pub note_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 pub fn init_storage() -> Result<StorageStatus, String> {
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
@@ -181,6 +209,24 @@ pub fn list_folders() -> Result<Vec<FolderRecord>, String> {
         .map_err(|error| error.to_string())?;
 
     collect_rows(rows)
+}
+
+pub fn get_note_by_id(request: NoteIdRequest) -> Result<NoteRecord, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let note = get_note(&connection, id)?;
+
+    if note.is_deleted {
+        return Err("便签已在回收站中".to_string());
+    }
+
+    Ok(note)
 }
 
 pub fn create_folder(request: CreateFolderRequest) -> Result<FolderRecord, String> {
@@ -253,7 +299,8 @@ pub fn list_notes(request: ListNotesRequest) -> Result<Vec<NoteRecord>, String> 
     let connection = open_connection(&paths)?;
     let note_type = normalize_optional_note_type(request.note_type)?;
     let folder_id = normalize_optional_text(request.folder_id);
-    let title_query = normalize_optional_text(request.title_query).map(|value| format!("%{value}%"));
+    let title_query =
+        normalize_optional_text(request.title_query).map(|value| format!("%{value}%"));
 
     let mut statement = connection
         .prepare(
@@ -393,6 +440,15 @@ pub fn delete_note(request: NoteIdRequest) -> Result<NoteRecord, String> {
             ],
         )
         .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE sticky_windows
+             SET is_posted = 0,
+                 updated_at = ?1
+             WHERE note_id = ?2",
+            params![now, id],
+        )
+        .map_err(|error| error.to_string())?;
 
     get_note(&connection, id)
 }
@@ -483,7 +539,10 @@ pub fn purge_note(request: NoteIdRequest) -> Result<(), String> {
     }
 
     let changed = connection
-        .execute("DELETE FROM notes WHERE id = ?1 AND is_deleted = 1", params![id])
+        .execute(
+            "DELETE FROM notes WHERE id = ?1 AND is_deleted = 1",
+            params![id],
+        )
         .map_err(|error| error.to_string())?;
 
     if changed == 0 {
@@ -552,7 +611,11 @@ pub fn create_attachment(request: CreateAttachmentRequest) -> Result<AttachmentR
 
     let note_attachment_dir = PathBuf::from(&paths.attachments_dir).join(note_id);
     fs::create_dir_all(&note_attachment_dir).map_err(|error| {
-        format!("无法创建附件目录 {}: {}", note_attachment_dir.display(), error)
+        format!(
+            "无法创建附件目录 {}: {}",
+            note_attachment_dir.display(),
+            error
+        )
     })?;
 
     let id = Uuid::new_v4().to_string();
@@ -645,8 +708,7 @@ pub fn open_attachment(request: AttachmentIdRequest) -> Result<(), String> {
         return Err("附件文件不存在，可能已被移动或删除".to_string());
     }
 
-    tauri_plugin_opener::open_path(stored_path, None::<&str>)
-        .map_err(|error| error.to_string())
+    tauri_plugin_opener::open_path(stored_path, None::<&str>).map_err(|error| error.to_string())
 }
 
 pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
@@ -676,7 +738,10 @@ pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
 pub fn set_setting(request: SetSettingRequest) -> Result<SettingRecord, String> {
     let key = request.key.trim();
 
-    if !matches!(key, "theme_mode" | "startup_mode" | "backup_dir" | "recycle_bin_dir") {
+    if !matches!(
+        key,
+        "theme_mode" | "startup_mode" | "backup_dir" | "recycle_bin_dir"
+    ) {
         return Err("不支持的设置项".to_string());
     }
 
@@ -698,6 +763,176 @@ pub fn set_setting(request: SetSettingRequest) -> Result<SettingRecord, String> 
     get_setting(&connection, key)
 }
 
+pub fn post_sticky_note(request: NoteIdRequest) -> Result<StickyWindowRecord, String> {
+    let note_id = request.id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    ensure_note_is_active(&connection, note_id)?;
+    let now = Utc::now().to_rfc3339();
+
+    connection
+        .execute(
+            "INSERT INTO sticky_windows (
+                note_id, is_posted, is_always_on_top, x, y, width, height, created_at, updated_at
+             )
+             VALUES (?1, 1, 1, 120.0, 120.0, 360.0, 420.0, ?2, ?2)
+             ON CONFLICT(note_id) DO UPDATE SET
+                is_posted = 1,
+                is_always_on_top = 1,
+                updated_at = excluded.updated_at",
+            params![note_id, now],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_sticky_window_by_note_id(&connection, note_id)
+}
+
+pub fn unpost_sticky_note(request: NoteIdRequest) -> Result<StickyWindowRecord, String> {
+    let note_id = request.id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    let changed = connection
+        .execute(
+            "UPDATE sticky_windows
+             SET is_posted = 0,
+                 updated_at = ?1
+             WHERE note_id = ?2",
+            params![now, note_id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("便签尚未贴出".to_string());
+    }
+
+    get_sticky_window_by_note_id(&connection, note_id)
+}
+
+pub fn get_sticky_window(request: NoteIdRequest) -> Result<StickyWindowRecord, String> {
+    let note_id = request.id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+
+    get_sticky_window_by_note_id(&connection, note_id)
+}
+
+pub fn list_sticky_windows() -> Result<Vec<StickyWindowRecord>, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT sticky_windows.note_id,
+                    sticky_windows.is_posted,
+                    sticky_windows.is_always_on_top,
+                    sticky_windows.x,
+                    sticky_windows.y,
+                    sticky_windows.width,
+                    sticky_windows.height,
+                    sticky_windows.created_at,
+                    sticky_windows.updated_at
+             FROM sticky_windows
+             INNER JOIN notes ON notes.id = sticky_windows.note_id
+             WHERE sticky_windows.is_posted = 1
+                AND notes.is_deleted = 0
+             ORDER BY sticky_windows.updated_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map([], map_sticky_window_row)
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+pub fn save_sticky_window_bounds(
+    request: SaveStickyBoundsRequest,
+) -> Result<StickyWindowRecord, String> {
+    let note_id = request.note_id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let width = request.width.clamp(260.0, 1400.0);
+    let height = request.height.clamp(220.0, 1200.0);
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    ensure_note_is_active(&connection, note_id)?;
+    let now = Utc::now().to_rfc3339();
+
+    connection
+        .execute(
+            "INSERT INTO sticky_windows (
+                note_id, is_posted, is_always_on_top, x, y, width, height, created_at, updated_at
+             )
+             VALUES (?1, 1, 1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(note_id) DO UPDATE SET
+                x = excluded.x,
+                y = excluded.y,
+                width = excluded.width,
+                height = excluded.height,
+                updated_at = excluded.updated_at",
+            params![note_id, request.x, request.y, width, height, now],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_sticky_window_by_note_id(&connection, note_id)
+}
+
+pub fn set_sticky_always_on_top(
+    request: SetStickyAlwaysOnTopRequest,
+) -> Result<StickyWindowRecord, String> {
+    let note_id = request.note_id.trim();
+
+    if note_id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let now = Utc::now().to_rfc3339();
+    let always_on_top = if request.is_always_on_top { 1 } else { 0 };
+    let changed = connection
+        .execute(
+            "UPDATE sticky_windows
+             SET is_always_on_top = ?1,
+                 updated_at = ?2
+             WHERE note_id = ?3",
+            params![always_on_top, now, note_id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("便签尚未贴出".to_string());
+    }
+
+    get_sticky_window_by_note_id(&connection, note_id)
+}
+
+pub fn force_sticky_always_on_top(note_id: &str) -> Result<StickyWindowRecord, String> {
+    set_sticky_always_on_top(SetStickyAlwaysOnTopRequest {
+        note_id: note_id.to_string(),
+        is_always_on_top: true,
+    })
+}
+
 fn ensure_app_paths() -> Result<AppPaths, String> {
     let documents_dir = dirs::document_dir().ok_or("无法定位当前用户的 Documents 目录")?;
     let root_dir = documents_dir.join(APP_DIR_NAME);
@@ -707,10 +942,15 @@ fn ensure_app_paths() -> Result<AppPaths, String> {
     let recycle_bin_dir = root_dir.join("Recycle Bin");
     let database_path = data_dir.join(DATABASE_FILE_NAME);
 
-    for dir in [&root_dir, &data_dir, &attachments_dir, &backup_dir, &recycle_bin_dir] {
-        fs::create_dir_all(dir).map_err(|error| {
-            format!("无法创建目录 {}: {}", dir.display(), error)
-        })?;
+    for dir in [
+        &root_dir,
+        &data_dir,
+        &attachments_dir,
+        &backup_dir,
+        &recycle_bin_dir,
+    ] {
+        fs::create_dir_all(dir)
+            .map_err(|error| format!("无法创建目录 {}: {}", dir.display(), error))?;
     }
 
     Ok(AppPaths {
@@ -790,6 +1030,19 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
                 FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS sticky_windows (
+                note_id TEXT PRIMARY KEY,
+                is_posted INTEGER NOT NULL DEFAULT 0,
+                is_always_on_top INTEGER NOT NULL DEFAULT 1,
+                x REAL NOT NULL DEFAULT 120.0,
+                y REAL NOT NULL DEFAULT 120.0,
+                width REAL NOT NULL DEFAULT 360.0,
+                height REAL NOT NULL DEFAULT 420.0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
             CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
             CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
@@ -798,6 +1051,7 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_recycle_items_deleted_at ON recycle_items(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
             CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind);
+            CREATE INDEX IF NOT EXISTS idx_sticky_windows_posted ON sticky_windows(is_posted);
             ",
         )
         .map_err(|error| error.to_string())
@@ -975,7 +1229,25 @@ fn get_attachment(connection: &Connection, id: &str) -> Result<AttachmentRecord,
         .map_err(|error| error.to_string())
 }
 
-fn list_attachment_paths_for_note(connection: &Connection, note_id: &str) -> Result<Vec<String>, String> {
+fn get_sticky_window_by_note_id(
+    connection: &Connection,
+    note_id: &str,
+) -> Result<StickyWindowRecord, String> {
+    connection
+        .query_row(
+            "SELECT note_id, is_posted, is_always_on_top, x, y, width, height, created_at, updated_at
+             FROM sticky_windows
+             WHERE note_id = ?1",
+            params![note_id],
+            map_sticky_window_row,
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn list_attachment_paths_for_note(
+    connection: &Connection,
+    note_id: &str,
+) -> Result<Vec<String>, String> {
     let mut statement = connection
         .prepare(
             "SELECT stored_path
@@ -1053,6 +1325,20 @@ fn map_attachment_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentRec
         size: row.get(6)?,
         kind: row.get(7)?,
         created_at: row.get(8)?,
+    })
+}
+
+fn map_sticky_window_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StickyWindowRecord> {
+    Ok(StickyWindowRecord {
+        note_id: row.get(0)?,
+        is_posted: row.get::<_, i64>(1)? == 1,
+        is_always_on_top: row.get::<_, i64>(2)? == 1,
+        x: row.get(3)?,
+        y: row.get(4)?,
+        width: row.get(5)?,
+        height: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
@@ -1175,6 +1461,7 @@ mod tests {
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
         assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
+        assert_eq!(count_rows(&connection, "sticky_windows").unwrap(), 0);
         assert!(!default_folder_id.is_empty());
     }
 
@@ -1261,7 +1548,10 @@ mod tests {
             )
             .expect("restore note");
         connection
-            .execute("DELETE FROM recycle_items WHERE note_id = ?1", params![note_id])
+            .execute(
+                "DELETE FROM recycle_items WHERE note_id = ?1",
+                params![note_id],
+            )
             .expect("remove recycle item");
 
         let restored_note = get_note(&connection, &note_id).expect("read restored note");
@@ -1270,10 +1560,16 @@ mod tests {
         assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
 
         connection
-            .execute("UPDATE notes SET is_deleted = 1 WHERE id = ?1", params![note_id])
+            .execute(
+                "UPDATE notes SET is_deleted = 1 WHERE id = ?1",
+                params![note_id],
+            )
             .expect("soft delete again");
         connection
-            .execute("DELETE FROM notes WHERE id = ?1 AND is_deleted = 1", params![note_id])
+            .execute(
+                "DELETE FROM notes WHERE id = ?1 AND is_deleted = 1",
+                params![note_id],
+            )
             .expect("purge note");
 
         assert_eq!(count_rows(&connection, "notes").unwrap(), 0);
@@ -1323,5 +1619,54 @@ mod tests {
             .expect("delete note");
 
         assert_eq!(count_rows(&connection, "attachments").unwrap(), 0);
+    }
+
+    #[test]
+    fn sticky_window_records_track_posted_state_and_bounds() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        create_schema(&connection).expect("create schema");
+        let folder_id = ensure_default_folder(&connection).expect("seed folder");
+        let now = Utc::now().to_rfc3339();
+        let note_id = Uuid::new_v4().to_string();
+
+        connection
+            .execute(
+                "INSERT INTO notes (
+                    id, type, title, content, folder_id, is_pinned, is_deleted,
+                    created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, 'normal', '桌面便签', '<p>内容</p>', ?2, 0, 0, ?3, ?3, NULL)",
+                params![note_id, folder_id, now],
+            )
+            .expect("insert note");
+        connection
+            .execute(
+                "INSERT INTO sticky_windows (
+                    note_id, is_posted, is_always_on_top, x, y, width, height, created_at, updated_at
+                 )
+                 VALUES (?1, 1, 1, 20.0, 30.0, 360.0, 420.0, ?2, ?2)",
+                params![note_id, now],
+            )
+            .expect("insert sticky window");
+
+        let sticky =
+            get_sticky_window_by_note_id(&connection, &note_id).expect("read sticky window");
+
+        assert!(sticky.is_posted);
+        assert!(sticky.is_always_on_top);
+        assert_eq!(sticky.x, 20.0);
+        assert_eq!(sticky.width, 360.0);
+
+        connection
+            .execute(
+                "UPDATE sticky_windows SET is_posted = 0, width = 480.0 WHERE note_id = ?1",
+                params![note_id],
+            )
+            .expect("update sticky window");
+        let updated_sticky =
+            get_sticky_window_by_note_id(&connection, &note_id).expect("read updated sticky");
+
+        assert!(!updated_sticky.is_posted);
+        assert_eq!(updated_sticky.width, 480.0);
     }
 }

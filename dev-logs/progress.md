@@ -344,3 +344,49 @@
 - Phase 5 已实现富文本和附件基础闭环，但尚未做富文本懒加载；当前构建会提示前端 chunk 超过 500 kB。
 - 拖入附件会立即复制到软件附件目录；正文 HTML 仍需用户点击“保存”写入数据库。
 - 还未做桌面贴出窗口，计划进入 Phase 6。
+
+## 2026-06-13 Phase 6 桌面贴出便签
+
+### Completed
+
+- 新增 `sticky_windows` SQLite 表，保存便签贴出状态、窗口位置、尺寸和置顶状态。
+- 新增单条便签读取命令 `get_note`，供贴出窗口按 ID 读取内容。
+- 新增 `post_sticky_note`，可从主工作台将便签贴出为独立桌面窗口。
+- 新增 `unpost_sticky_note`，可取消贴出并关闭独立窗口。
+- 新增 `list_sticky_windows` 和 `get_sticky_window`，用于读取当前贴出状态。
+- 新增 `set_sticky_always_on_top`，贴出窗口支持手动置顶/取消置顶。
+- 贴出窗口移动或缩放后会保存位置和尺寸。
+- 软件启动时会恢复已贴出的便签窗口，并按需求自动重新置顶。
+- 主工作台新增贴出/取消贴出按钮和“已贴出”状态标记。
+- 贴出窗口支持编辑标题、富文本内容、保存、查看附件和打开附件。
+- 删除便签进入回收站时，会同步取消该便签贴出状态。
+- 新增便携版最终交付需求：便携版所有数据保存在软件所在目录。
+- 开发计划新增 Phase 11：便携版和正式 GitHub Release。
+
+### Changed Files
+
+- `README.md`
+- `docs/requirements.md`
+- `docs/technical-spec.md`
+- `docs/development-plan.md`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，5 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+
+### Risks
+
+- 贴出窗口内容同步采用短间隔刷新和保存后刷新，后续可补充跨窗口事件广播以进一步减少延迟。
+- 贴出窗口复用了当前富文本编辑器，前端包体积仍有 Vite chunk 超过 500 kB 的提示，计划在性能优化阶段处理。
+- 便携版需求已写入文档，但实际便携目录切换和便携打包仍留到 Phase 11 实现。

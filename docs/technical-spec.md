@@ -87,6 +87,25 @@ Documents\xBaoNotes\Recycle Bin
 
 备份和回收站路径必须允许用户在设置中修改。
 
+便携版数据根目录：
+
+- 便携版通过软件所在目录旁的 `portable.flag` 标记启用。
+- 启用后，数据根目录改为可执行文件所在目录或其旁边的便携数据目录。
+- 便携版不默认写入 `Documents\xBaoNotes`。
+- 如果便携版所在目录不可写，启动时必须提示用户移动到可写目录。
+
+建议便携版目录结构：
+
+```text
+xBaoNotesPortable\
+  xbao-notes.exe
+  portable.flag
+  Data\
+  Attachments\
+  Backup\
+  Recycle Bin\
+```
+
 ## 5. 数据模型
 
 建议核心表：
@@ -135,10 +154,22 @@ Phase 5 已实现富文本和附件基础能力：
 - 彻底删除便签和清空回收站时，会删除关联附件文件并移除附件数据库记录。
 - 从回收站恢复便签时，附件保持原关联关系，不需要额外迁移。
 
+Phase 6 已实现桌面贴出便签基础能力：
+
+- 新增 `sticky_windows` 表，保存贴出状态、置顶状态、位置和尺寸。
+- 新增 `get_note`：按便签 ID 读取单条活动便签。
+- 新增 `post_sticky_note`：将便签标记为贴出并创建独立窗口。
+- 新增 `unpost_sticky_note`：取消贴出并关闭独立窗口。
+- 新增 `list_sticky_windows`：读取当前贴出的便签窗口。
+- 新增 `get_sticky_window`：读取单条贴出窗口状态。
+- 新增 `set_sticky_always_on_top`：支持贴出窗口手动置顶/取消置顶。
+- 贴出窗口移动或缩放时自动保存窗口位置和尺寸。
+- 应用启动时恢复已贴出窗口，并按需求自动重新置顶。
+- 删除便签进入回收站时，会同步取消该便签的贴出状态。
+
 后续阶段再扩展：
 
 - `reminders`
-- `sticky_windows`
 
 `notes` 至少包含：
 

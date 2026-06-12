@@ -73,6 +73,18 @@ type AttachmentRecord = {
   created_at: string;
 };
 
+type StickyWindowRecord = {
+  note_id: string;
+  is_posted: boolean;
+  is_always_on_top: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  created_at: string;
+  updated_at: string;
+};
+
 type EditorState = {
   id: string;
   note_type: StorageNoteType;
@@ -147,6 +159,17 @@ function resolveTheme(theme: ThemeMode) {
 }
 
 export default function App() {
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view");
+
+  if (view === "sticky") {
+    return <StickyNoteWindow noteId={params.get("noteId") ?? ""} />;
+  }
+
+  return <MainApp />;
+}
+
+function MainApp() {
   const [activeType, setActiveType] = useState<NoteType>("all");
   const [activeFolderId, setActiveFolderId] = useState<string>("all");
   const [themeMode, setThemeMode] = useState<ThemeMode>("system");
@@ -156,6 +179,7 @@ export default function App() {
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [recycleItems, setRecycleItems] = useState<RecycleItemRecord[]>([]);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [stickyWindows, setStickyWindows] = useState<StickyWindowRecord[]>([]);
   const [pendingImageAttachments, setPendingImageAttachments] = useState<AttachmentRecord[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
@@ -172,6 +196,11 @@ export default function App() {
     () => notes.find((note) => note.id === selectedNoteId) ?? null,
     [notes, selectedNoteId],
   );
+  const postedStickyIds = useMemo(
+    () => new Set(stickyWindows.map((stickyWindow) => stickyWindow.note_id)),
+    [stickyWindows],
+  );
+  const isSelectedNotePosted = editorState ? postedStickyIds.has(editorState.id) : false;
 
   useEffect(() => {
     void refreshStorage();
@@ -253,7 +282,7 @@ export default function App() {
       const folderId = activeFolderId === "all" ? undefined : activeFolderId;
       const titleQuery = query.trim() || undefined;
       const status = await invoke<StorageStatus>("initialize_storage");
-      const [folderList, noteList, recycleList] = await Promise.all([
+      const [folderList, noteList, recycleList, stickyList] = await Promise.all([
         invoke<FolderRecord[]>("list_folders"),
         invoke<NoteRecord[]>("list_notes", {
           request: {
@@ -263,12 +292,14 @@ export default function App() {
           },
         }),
         invoke<RecycleItemRecord[]>("list_recycle_items"),
+        invoke<StickyWindowRecord[]>("list_sticky_windows"),
       ]);
 
       setStorageStatus(status);
       setFolders(folderList);
       setNotes(noteList);
       setRecycleItems(recycleList);
+      setStickyWindows(stickyList);
 
       if (!options.keepSelection) {
         setSelectedNoteId((currentId) => {
@@ -400,6 +431,27 @@ export default function App() {
     }
   }
 
+  async function handleToggleStickyWindow() {
+    if (!editorState) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke<StickyWindowRecord>(
+        isSelectedNotePosted ? "unpost_sticky_note" : "post_sticky_note",
+        {
+          request: { id: editorState.id },
+        },
+      );
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function handleDeleteNote() {
     if (!editorState) {
       return;
@@ -413,6 +465,12 @@ export default function App() {
 
     setIsBusy(true);
     try {
+      if (postedStickyIds.has(editorState.id)) {
+        await invoke("unpost_sticky_note", {
+          request: { id: editorState.id },
+        });
+      }
+
       await invoke<NoteRecord>("delete_note", {
         request: { id: editorState.id },
       });
@@ -597,7 +655,7 @@ export default function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Phase 5</p>
+            <p className="eyebrow">Phase 6</p>
             <h2>{isRecycleView ? "回收站" : "便签工作台"}</h2>
           </div>
           {isRecycleView ? (
@@ -668,7 +726,10 @@ export default function App() {
                 >
                   <div className="note-card-header">
                     <span className="type-pill">{typeLabels[note.note_type]}</span>
-                    {note.is_pinned ? <span className="pin-label">置顶</span> : null}
+                    <span className="note-card-badges">
+                      {postedStickyIds.has(note.id) ? <span className="sticky-label">已贴出</span> : null}
+                      {note.is_pinned ? <span className="pin-label">置顶</span> : null}
+                    </span>
                   </div>
                   <h4>{note.title}</h4>
                   <p>{plainTextFromContent(note.content) || "暂无内容"}</p>
@@ -685,9 +746,14 @@ export default function App() {
             <div className="panel-heading">
               <h3>{isRecycleView ? "回收站说明" : "编辑"}</h3>
               {!isRecycleView && editorState ? (
-                <button className="ghost-action" disabled={isBusy} onClick={handleTogglePinned} type="button">
-                  {editorState.is_pinned ? "取消置顶" : "置顶"}
-                </button>
+                <div className="editor-heading-actions">
+                  <button className="ghost-action" disabled={isBusy} onClick={handleTogglePinned} type="button">
+                    {editorState.is_pinned ? "取消置顶" : "置顶"}
+                  </button>
+                  <button className="ghost-action" disabled={isBusy} onClick={handleToggleStickyWindow} type="button">
+                    {isSelectedNotePosted ? "取消贴出" : "贴出"}
+                  </button>
+                </div>
               ) : null}
             </div>
 
@@ -815,6 +881,10 @@ export default function App() {
                 <strong>{attachments.length}</strong>
               </div>
               <div>
+                <span>已贴出</span>
+                <strong>{stickyWindows.length}</strong>
+              </div>
+              <div>
                 <span>回收站</span>
                 <strong>{recycleItems.length}</strong>
               </div>
@@ -828,6 +898,213 @@ export default function App() {
           </aside>
         </section>
       </section>
+    </main>
+  );
+}
+
+function StickyNoteWindow({ noteId }: { noteId: string }) {
+  const [note, setNote] = useState<NoteRecord | null>(null);
+  const [stickyWindow, setStickyWindow] = useState<StickyWindowRecord | null>(null);
+  const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [editorState, setEditorState] = useState<EditorState | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+
+  useEffect(() => {
+    void loadStickyNote();
+  }, [noteId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!isDirty && !isBusy) {
+        void loadStickyNote({ preserveEditor: false });
+      }
+    }, 2500);
+
+    return () => window.clearInterval(timer);
+  }, [isDirty, isBusy, noteId]);
+
+  async function loadStickyNote(options: { preserveEditor?: boolean } = {}) {
+    if (!noteId) {
+      setStorageError("缺少便签 ID，无法打开贴出窗口");
+      return;
+    }
+
+    try {
+      setStorageError(null);
+      await invoke<StorageStatus>("initialize_storage");
+      const [nextNote, nextStickyWindow, nextAttachments] = await Promise.all([
+        invoke<NoteRecord>("get_note", {
+          request: { id: noteId },
+        }),
+        invoke<StickyWindowRecord>("get_sticky_window", {
+          request: { id: noteId },
+        }),
+        invoke<AttachmentRecord[]>("list_attachments", {
+          request: { id: noteId },
+        }),
+      ]);
+
+      setNote(nextNote);
+      setStickyWindow(nextStickyWindow);
+      setAttachments(nextAttachments);
+
+      if (!options.preserveEditor) {
+        setEditorState({
+          id: nextNote.id,
+          note_type: nextNote.note_type,
+          title: nextNote.title,
+          content: nextNote.content,
+          folder_id: nextNote.folder_id,
+          is_pinned: nextNote.is_pinned,
+        });
+      }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function handleSaveStickyNote() {
+    if (!editorState) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const updatedNote = await invoke<NoteRecord>("update_note", {
+        request: {
+          id: editorState.id,
+          note_type: editorState.note_type,
+          title: editorState.title,
+          content: editorState.content,
+          folder_id: editorState.folder_id,
+        },
+      });
+
+      setNote(updatedNote);
+      setIsDirty(false);
+      await loadStickyNote({ preserveEditor: false });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleToggleStickyTop() {
+    if (!stickyWindow) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const updatedSticky = await invoke<StickyWindowRecord>("set_sticky_always_on_top", {
+        request: {
+          note_id: stickyWindow.note_id,
+          is_always_on_top: !stickyWindow.is_always_on_top,
+        },
+      });
+      setStickyWindow(updatedSticky);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleUnpostStickyNote() {
+    if (!noteId) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke("unpost_sticky_note", {
+        request: { id: noteId },
+      });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+      setIsBusy(false);
+    }
+  }
+
+  async function handleOpenAttachment(attachmentId: string) {
+    try {
+      await invoke("open_attachment", {
+        request: { id: attachmentId },
+      });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  document.documentElement.dataset.theme = resolveTheme("system");
+
+  if (!editorState) {
+    return (
+      <main className="sticky-shell">
+        <div className="empty-state">
+          <strong>正在打开贴出便签</strong>
+          <span>{storageError ?? "读取本地数据中..."}</span>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="sticky-shell">
+      <header className="sticky-window-bar">
+        <div className="sticky-title-block">
+          <span className="type-pill">{typeLabels[editorState.note_type]}</span>
+          <input
+            aria-label="贴出便签标题"
+            className="sticky-title-input"
+            onChange={(event) => {
+              setIsDirty(true);
+              setEditorState((current) =>
+                current ? { ...current, title: event.target.value } : current,
+              );
+            }}
+            value={editorState.title}
+          />
+        </div>
+
+        <div className="sticky-window-actions">
+          <button className="ghost-action" disabled={isBusy} onClick={handleToggleStickyTop} type="button">
+            {stickyWindow?.is_always_on_top ? "取消置顶" : "置顶"}
+          </button>
+          <button className="danger-action" disabled={isBusy} onClick={handleUnpostStickyNote} type="button">
+            取消贴出
+          </button>
+        </div>
+      </header>
+
+      <RichTextEditor
+        attachments={attachments}
+        disabled={isBusy}
+        isFileDragging={false}
+        noteId={editorState.id}
+        onChange={(content) => {
+          setIsDirty(true);
+          setEditorState((current) =>
+            current ? { ...current, content } : current,
+          );
+        }}
+        onOpenAttachment={handleOpenAttachment}
+        onPendingImagesConsumed={() => undefined}
+        pendingImages={[]}
+        value={editorState.content}
+      />
+
+      <footer className="sticky-footer">
+        <span>{note ? `更新：${formatDate(note.updated_at)}` : "本地便签"}</span>
+        <button className="primary-action" disabled={isBusy || !isDirty} onClick={handleSaveStickyNote} type="button">
+          {isBusy ? "保存中" : "保存"}
+        </button>
+      </footer>
+
+      {storageError ? <p className="error-text sticky-error">{storageError}</p> : null}
     </main>
   );
 }
