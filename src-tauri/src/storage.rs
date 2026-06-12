@@ -55,6 +55,15 @@ pub struct SettingRecord {
     pub updated_at: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RecycleItemRecord {
+    pub id: String,
+    pub note_id: String,
+    pub original_folder_id: String,
+    pub deleted_at: String,
+    pub title_snapshot: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateFolderRequest {
     pub name: String,
@@ -88,6 +97,11 @@ pub struct UpdateNoteRequest {
 pub struct SetNotePinnedRequest {
     pub id: String,
     pub is_pinned: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NoteIdRequest {
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,6 +322,164 @@ pub fn set_note_pinned(request: SetNotePinnedRequest) -> Result<NoteRecord, Stri
     get_note(&connection, id)
 }
 
+pub fn delete_note(request: NoteIdRequest) -> Result<NoteRecord, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let note = get_note(&connection, id)?;
+
+    if note.is_deleted {
+        return Err("便签已经在回收站中".to_string());
+    }
+
+    let now = Utc::now().to_rfc3339();
+    connection
+        .execute(
+            "UPDATE notes
+             SET is_deleted = 1,
+                 is_pinned = 0,
+                 deleted_at = ?1,
+                 updated_at = ?1
+             WHERE id = ?2 AND is_deleted = 0",
+            params![now, id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    connection
+        .execute(
+            "INSERT INTO recycle_items (
+                id, note_id, original_folder_id, deleted_at, title_snapshot
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(note_id) DO UPDATE SET
+                original_folder_id = excluded.original_folder_id,
+                deleted_at = excluded.deleted_at,
+                title_snapshot = excluded.title_snapshot",
+            params![
+                Uuid::new_v4().to_string(),
+                id,
+                note.folder_id,
+                now,
+                note.title
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+
+    get_note(&connection, id)
+}
+
+pub fn list_recycle_items() -> Result<Vec<RecycleItemRecord>, String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT recycle_items.id,
+                    recycle_items.note_id,
+                    recycle_items.original_folder_id,
+                    recycle_items.deleted_at,
+                    recycle_items.title_snapshot
+             FROM recycle_items
+             INNER JOIN notes ON notes.id = recycle_items.note_id
+             WHERE notes.is_deleted = 1
+             ORDER BY recycle_items.deleted_at DESC",
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map([], map_recycle_item_row)
+        .map_err(|error| error.to_string())?;
+
+    collect_rows(rows)
+}
+
+pub fn restore_note(request: NoteIdRequest) -> Result<NoteRecord, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let original_folder_id: String = connection
+        .query_row(
+            "SELECT original_folder_id FROM recycle_items WHERE note_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let folder_id = if folder_exists(&connection, &original_folder_id)? {
+        original_folder_id
+    } else {
+        ensure_default_folder(&connection)?
+    };
+    let now = Utc::now().to_rfc3339();
+    let changed = connection
+        .execute(
+            "UPDATE notes
+             SET is_deleted = 0,
+                 deleted_at = NULL,
+                 folder_id = ?1,
+                 updated_at = ?2
+             WHERE id = ?3 AND is_deleted = 1",
+            params![folder_id, now, id],
+        )
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("未找到可恢复的便签".to_string());
+    }
+
+    connection
+        .execute("DELETE FROM recycle_items WHERE note_id = ?1", params![id])
+        .map_err(|error| error.to_string())?;
+
+    get_note(&connection, id)
+}
+
+pub fn purge_note(request: NoteIdRequest) -> Result<(), String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("便签 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let changed = connection
+        .execute("DELETE FROM notes WHERE id = ?1 AND is_deleted = 1", params![id])
+        .map_err(|error| error.to_string())?;
+
+    if changed == 0 {
+        return Err("未找到可彻底删除的便签".to_string());
+    }
+
+    connection
+        .execute("DELETE FROM recycle_items WHERE note_id = ?1", params![id])
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
+pub fn empty_recycle_bin() -> Result<(), String> {
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+
+    connection
+        .execute("DELETE FROM notes WHERE is_deleted = 1", [])
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute("DELETE FROM recycle_items", [])
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
+}
+
 pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
     let paths = ensure_app_paths()?;
     let connection = open_connection(&paths)?;
@@ -427,10 +599,21 @@ fn create_schema(connection: &Connection) -> Result<(), String> {
                 FOREIGN KEY(folder_id) REFERENCES folders(id)
             );
 
+            CREATE TABLE IF NOT EXISTS recycle_items (
+                id TEXT PRIMARY KEY,
+                note_id TEXT NOT NULL UNIQUE,
+                original_folder_id TEXT NOT NULL,
+                deleted_at TEXT NOT NULL,
+                title_snapshot TEXT NOT NULL,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title);
             CREATE INDEX IF NOT EXISTS idx_notes_type ON notes(type);
             CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(folder_id);
             CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(is_deleted);
+            CREATE INDEX IF NOT EXISTS idx_recycle_items_note_id ON recycle_items(note_id);
+            CREATE INDEX IF NOT EXISTS idx_recycle_items_deleted_at ON recycle_items(deleted_at);
             ",
         )
         .map_err(|error| error.to_string())
@@ -551,6 +734,18 @@ fn ensure_folder_exists(connection: &Connection, folder_id: &str) -> Result<(), 
     Ok(())
 }
 
+fn folder_exists(connection: &Connection, folder_id: &str) -> Result<bool, String> {
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM folders WHERE id = ?1 AND is_deleted = 0",
+            params![folder_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    Ok(count > 0)
+}
+
 fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
     Ok(NoteRecord {
         id: row.get(0)?,
@@ -563,6 +758,16 @@ fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRecord> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
         deleted_at: row.get(9)?,
+    })
+}
+
+fn map_recycle_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecycleItemRecord> {
+    Ok(RecycleItemRecord {
+        id: row.get(0)?,
+        note_id: row.get(1)?,
+        original_folder_id: row.get(2)?,
+        deleted_at: row.get(3)?,
+        title_snapshot: row.get(4)?,
     })
 }
 
@@ -623,6 +828,7 @@ mod tests {
 
         assert_eq!(count_rows(&connection, "settings").unwrap(), 4);
         assert_eq!(count_rows(&connection, "folders").unwrap(), 1);
+        assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
         assert!(!default_folder_id.is_empty());
     }
 
@@ -664,5 +870,66 @@ mod tests {
         assert_eq!(updated_note.title, "工作清单");
         assert_eq!(updated_note.note_type, "todo");
         assert!(updated_note.is_pinned);
+    }
+
+    #[test]
+    fn recycle_bin_restores_and_purges_notes() {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        create_schema(&connection).expect("create schema");
+        let folder_id = ensure_default_folder(&connection).expect("seed folder");
+        let now = Utc::now().to_rfc3339();
+        let note_id = Uuid::new_v4().to_string();
+
+        connection
+            .execute(
+                "INSERT INTO notes (
+                    id, type, title, content, folder_id, is_pinned, is_deleted,
+                    created_at, updated_at, deleted_at
+                 )
+                 VALUES (?1, 'normal', '可恢复便签', '内容', ?2, 1, 0, ?3, ?3, NULL)",
+                params![note_id, folder_id, now],
+            )
+            .expect("insert note");
+
+        let deleted_at = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "UPDATE notes SET is_deleted = 1, is_pinned = 0, deleted_at = ?1 WHERE id = ?2",
+                params![deleted_at, note_id],
+            )
+            .expect("soft delete note");
+        connection
+            .execute(
+                "INSERT INTO recycle_items (id, note_id, original_folder_id, deleted_at, title_snapshot)
+                 VALUES (?1, ?2, ?3, ?4, '可恢复便签')",
+                params![Uuid::new_v4().to_string(), note_id, folder_id, deleted_at],
+            )
+            .expect("insert recycle item");
+
+        assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 1);
+
+        connection
+            .execute(
+                "UPDATE notes SET is_deleted = 0, deleted_at = NULL WHERE id = ?1",
+                params![note_id],
+            )
+            .expect("restore note");
+        connection
+            .execute("DELETE FROM recycle_items WHERE note_id = ?1", params![note_id])
+            .expect("remove recycle item");
+
+        let restored_note = get_note(&connection, &note_id).expect("read restored note");
+
+        assert!(!restored_note.is_deleted);
+        assert_eq!(count_rows(&connection, "recycle_items").unwrap(), 0);
+
+        connection
+            .execute("UPDATE notes SET is_deleted = 1 WHERE id = ?1", params![note_id])
+            .expect("soft delete again");
+        connection
+            .execute("DELETE FROM notes WHERE id = ?1 AND is_deleted = 1", params![note_id])
+            .expect("purge note");
+
+        assert_eq!(count_rows(&connection, "notes").unwrap(), 0);
     }
 }

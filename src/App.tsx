@@ -41,6 +41,14 @@ type NoteRecord = {
   deleted_at: string | null;
 };
 
+type RecycleItemRecord = {
+  id: string;
+  note_id: string;
+  original_folder_id: string;
+  deleted_at: string;
+  title_snapshot: string;
+};
+
 type EditorState = {
   id: string;
   note_type: StorageNoteType;
@@ -98,11 +106,13 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [notes, setNotes] = useState<NoteRecord[]>([]);
+  const [recycleItems, setRecycleItems] = useState<RecycleItemRecord[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<EditorState | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [folderName, setFolderName] = useState("");
+  const [isRecycleView, setIsRecycleView] = useState(false);
 
   const resolvedTheme = resolveTheme(themeMode);
   document.documentElement.dataset.theme = resolvedTheme;
@@ -114,7 +124,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshStorage();
-  }, [activeType, activeFolderId, query]);
+  }, [activeType, activeFolderId, isRecycleView, query]);
 
   useEffect(() => {
     if (!selectedNote) {
@@ -139,7 +149,7 @@ export default function App() {
       const folderId = activeFolderId === "all" ? undefined : activeFolderId;
       const titleQuery = query.trim() || undefined;
       const status = await invoke<StorageStatus>("initialize_storage");
-      const [folderList, noteList] = await Promise.all([
+      const [folderList, noteList, recycleList] = await Promise.all([
         invoke<FolderRecord[]>("list_folders"),
         invoke<NoteRecord[]>("list_notes", {
           request: {
@@ -148,19 +158,21 @@ export default function App() {
             title_query: titleQuery,
           },
         }),
+        invoke<RecycleItemRecord[]>("list_recycle_items"),
       ]);
 
       setStorageStatus(status);
       setFolders(folderList);
       setNotes(noteList);
+      setRecycleItems(recycleList);
 
       if (!options.keepSelection) {
         setSelectedNoteId((currentId) => {
-          if (currentId && noteList.some((note) => note.id === currentId)) {
+          if (!isRecycleView && currentId && noteList.some((note) => note.id === currentId)) {
             return currentId;
           }
 
-          return noteList[0]?.id ?? null;
+          return isRecycleView ? null : noteList[0]?.id ?? null;
         });
       }
     } catch (error) {
@@ -169,6 +181,10 @@ export default function App() {
   }
 
   async function handleCreateNote() {
+    if (isRecycleView) {
+      setIsRecycleView(false);
+    }
+
     setIsBusy(true);
     try {
       const createdAt = new Date().toLocaleString("zh-CN", {
@@ -269,6 +285,89 @@ export default function App() {
     }
   }
 
+  async function handleDeleteNote() {
+    if (!editorState) {
+      return;
+    }
+
+    const confirmed = window.confirm(`确定要把“${editorState.title}”移入回收站吗？`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke<NoteRecord>("delete_note", {
+        request: { id: editorState.id },
+      });
+      setSelectedNoteId(null);
+      await refreshStorage();
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleRestoreNote(noteId: string) {
+    setIsBusy(true);
+    try {
+      const restoredNote = await invoke<NoteRecord>("restore_note", {
+        request: { id: noteId },
+      });
+      setIsRecycleView(false);
+      setSelectedNoteId(restoredNote.id);
+      await refreshStorage({ keepSelection: true });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handlePurgeNote(item: RecycleItemRecord) {
+    const confirmed = window.confirm(`彻底删除“${item.title_snapshot}”？此操作不能恢复。`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke("purge_note", {
+        request: { id: item.note_id },
+      });
+      await refreshStorage();
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleEmptyRecycleBin() {
+    if (recycleItems.length === 0) {
+      return;
+    }
+
+    const confirmed = window.confirm("确定清空回收站吗？所有回收站便签将被彻底删除，不能恢复。");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      await invoke("empty_recycle_bin");
+      await refreshStorage();
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar" aria-label="导航">
@@ -283,7 +382,10 @@ export default function App() {
         <nav className="folder-list" aria-label="文件夹">
           <button
             className={activeFolderId === "all" ? "folder-item active" : "folder-item"}
-            onClick={() => setActiveFolderId("all")}
+            onClick={() => {
+              setIsRecycleView(false);
+              setActiveFolderId("all");
+            }}
             type="button"
           >
             全部便签
@@ -292,13 +394,22 @@ export default function App() {
             <button
               className={activeFolderId === folder.id ? "folder-item active" : "folder-item"}
               key={folder.id}
-              onClick={() => setActiveFolderId(folder.id)}
+              onClick={() => {
+                setIsRecycleView(false);
+                setActiveFolderId(folder.id);
+              }}
               type="button"
             >
               {folder.name}
             </button>
           ))}
-          <button className="folder-item" disabled type="button">回收站</button>
+          <button
+            className={isRecycleView ? "folder-item active" : "folder-item"}
+            onClick={() => setIsRecycleView(true)}
+            type="button"
+          >
+            回收站
+          </button>
         </nav>
 
         <div className="folder-create">
@@ -321,14 +432,20 @@ export default function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Phase 3</p>
-            <h2>便签工作台</h2>
+            <h2>{isRecycleView ? "回收站" : "便签工作台"}</h2>
           </div>
-          <button className="primary-action" disabled={isBusy} onClick={handleCreateNote} type="button">
-            {isBusy ? "处理中" : "新建便签"}
-          </button>
+          {isRecycleView ? (
+            <button className="danger-action" disabled={isBusy || recycleItems.length === 0} onClick={handleEmptyRecycleBin} type="button">
+              清空回收站
+            </button>
+          ) : (
+            <button className="primary-action" disabled={isBusy} onClick={handleCreateNote} type="button">
+              {isBusy ? "处理中" : "新建便签"}
+            </button>
+          )}
         </header>
 
-        <div className="toolbar" aria-label="工具栏">
+        {!isRecycleView ? <div className="toolbar" aria-label="工具栏">
           <div className="segmented-control" role="radiogroup" aria-label="便签类型">
             {noteTypes.map((item) => (
               <button
@@ -350,24 +467,33 @@ export default function App() {
             type="search"
             value={query}
           />
-        </div>
+        </div> : null}
 
         <section className="content-grid">
           <div className="notes-panel" aria-label="便签列表">
             <div className="panel-heading">
-              <h3>列表</h3>
-              <span>{notes.length} 条</span>
+              <h3>{isRecycleView ? "已删除" : "列表"}</h3>
+              <span>{isRecycleView ? recycleItems.length : notes.length} 条</span>
             </div>
 
             <div className="note-list">
-              {notes.length === 0 ? (
+              {isRecycleView ? (
+                <RecycleList
+                  isBusy={isBusy}
+                  items={recycleItems}
+                  onPurge={handlePurgeNote}
+                  onRestore={handleRestoreNote}
+                />
+              ) : null}
+
+              {!isRecycleView && notes.length === 0 ? (
                 <div className="empty-state">
                   <strong>暂无便签</strong>
                   <span>点击“新建便签”会写入本地 SQLite 数据库。</span>
                 </div>
               ) : null}
 
-              {notes.map((note) => (
+              {!isRecycleView ? notes.map((note) => (
                 <button
                   className={note.id === selectedNoteId ? "note-card selected" : "note-card"}
                   key={note.id}
@@ -385,21 +511,26 @@ export default function App() {
                     <span>{formatDate(note.updated_at)}</span>
                   </footer>
                 </button>
-              ))}
+              )) : null}
             </div>
           </div>
 
           <aside className="inspector-panel" aria-label="便签编辑">
             <div className="panel-heading">
-              <h3>编辑</h3>
-              {editorState ? (
+              <h3>{isRecycleView ? "回收站说明" : "编辑"}</h3>
+              {!isRecycleView && editorState ? (
                 <button className="ghost-action" disabled={isBusy} onClick={handleTogglePinned} type="button">
                   {editorState.is_pinned ? "取消置顶" : "置顶"}
                 </button>
               ) : null}
             </div>
 
-            {editorState ? (
+            {isRecycleView ? (
+              <div className="empty-state">
+                <strong>删除不会立即消失</strong>
+                <span>便签先进入回收站，可恢复；彻底删除和清空回收站会再次确认。</span>
+              </div>
+            ) : editorState ? (
               <div className="editor-form">
                 <label>
                   标题
@@ -457,9 +588,14 @@ export default function App() {
                   />
                 </label>
 
-                <button className="primary-action full-width" disabled={isBusy} onClick={handleSaveNote} type="button">
-                  保存
-                </button>
+                <div className="editor-actions">
+                  <button className="primary-action full-width" disabled={isBusy} onClick={handleSaveNote} type="button">
+                    保存
+                  </button>
+                  <button className="danger-action full-width" disabled={isBusy} onClick={handleDeleteNote} type="button">
+                    移入回收站
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="empty-state">
@@ -499,6 +635,10 @@ export default function App() {
                 <span>便签</span>
                 <strong>{storageStatus?.note_count ?? 0}</strong>
               </div>
+              <div>
+                <span>回收站</span>
+                <strong>{recycleItems.length}</strong>
+              </div>
             </div>
 
             <div className="storage-panel">
@@ -510,6 +650,50 @@ export default function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function RecycleList({
+  isBusy,
+  items,
+  onPurge,
+  onRestore,
+}: {
+  isBusy: boolean;
+  items: RecycleItemRecord[];
+  onPurge: (item: RecycleItemRecord) => void;
+  onRestore: (noteId: string) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="empty-state">
+        <strong>回收站为空</strong>
+        <span>移入回收站的便签会显示在这里。</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {items.map((item) => (
+        <article className="note-card recycle-card" key={item.id}>
+          <div className="note-card-header">
+            <span className="type-pill">已删除</span>
+            <span>{formatDate(item.deleted_at)}</span>
+          </div>
+          <h4>{item.title_snapshot}</h4>
+          <p>原文件夹：{item.original_folder_id}</p>
+          <footer>
+            <button className="ghost-action" disabled={isBusy} onClick={() => onRestore(item.note_id)} type="button">
+              恢复
+            </button>
+            <button className="danger-action" disabled={isBusy} onClick={() => onPurge(item)} type="button">
+              彻底删除
+            </button>
+          </footer>
+        </article>
+      ))}
+    </>
   );
 }
 

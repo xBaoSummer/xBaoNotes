@@ -254,3 +254,41 @@
 - 当前未实现删除和回收站恢复；按照数据安全原则留到 Phase 4 单独实现。
 - 当前编辑器仍是普通文本框，富文本编辑器留到 Phase 5。
 - Phase 3 提交已在本地完成，但 GitHub 推送因网络连接 `github.com:443` 超时暂未完成。
+
+## 2026-06-12 Phase 4 回收站和安全删除
+
+### Completed
+
+- 新增 `recycle_items` 表，用于记录回收站条目。
+- 新增软删除接口 `delete_note`，删除便签时标记 `is_deleted = 1`，不直接硬删除。
+- 删除便签时取消置顶并记录 `deleted_at`。
+- 新增回收站列表接口 `list_recycle_items`。
+- 新增恢复接口 `restore_note`。
+- 新增彻底删除接口 `purge_note`。
+- 新增清空回收站接口 `empty_recycle_bin`。
+- 主界面接入回收站入口。
+- 普通便签编辑区新增“移入回收站”。
+- 回收站视图支持恢复、彻底删除、清空回收站。
+- 彻底删除和清空回收站前使用确认提示。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，3 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- Release 程序已启动并正常关闭。
+
+### Risks
+
+- 当前回收站只处理便签本体；附件功能将在 Phase 5 接入，届时需要补充附件随便签恢复/彻底删除的处理。

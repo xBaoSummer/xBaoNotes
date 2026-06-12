@@ -250,6 +250,16 @@ h2 {
   font-weight: 600;
 }
 
+.danger-action {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(220, 38, 38, 0.26);
+  border-radius: 8px;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.1);
+  font-weight: 600;
+}
+
 .full-width {
   width: 100%;
 }
@@ -334,6 +344,11 @@ h2 {
   background: var(--accent-soft);
 }
 
+.recycle-card:hover {
+  border-color: rgba(220, 38, 38, 0.32);
+  background: var(--surface-strong);
+}
+
 .note-card h4 {
   margin-top: 12px;
   font-size: 17px;
@@ -415,6 +430,11 @@ h2 {
   resize: vertical;
   padding: 10px;
   line-height: 1.55;
+}
+
+.editor-actions {
+  display: grid;
+  gap: 10px;
 }
 
 .theme-block {

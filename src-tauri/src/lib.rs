@@ -2,7 +2,8 @@ mod storage;
 
 use storage::{
     CreateFolderRequest, CreateNoteRequest, FolderRecord, ListNotesRequest, NoteRecord,
-    SetNotePinnedRequest, SetSettingRequest, SettingRecord, StorageStatus, UpdateNoteRequest,
+    NoteIdRequest, RecycleItemRecord, SetNotePinnedRequest, SetSettingRequest, SettingRecord,
+    StorageStatus, UpdateNoteRequest,
 };
 
 #[tauri::command]
@@ -51,6 +52,31 @@ fn set_note_pinned(request: SetNotePinnedRequest) -> Result<NoteRecord, String> 
 }
 
 #[tauri::command]
+fn delete_note(request: NoteIdRequest) -> Result<NoteRecord, String> {
+    storage::delete_note(request)
+}
+
+#[tauri::command]
+fn list_recycle_items() -> Result<Vec<RecycleItemRecord>, String> {
+    storage::list_recycle_items()
+}
+
+#[tauri::command]
+fn restore_note(request: NoteIdRequest) -> Result<NoteRecord, String> {
+    storage::restore_note(request)
+}
+
+#[tauri::command]
+fn purge_note(request: NoteIdRequest) -> Result<(), String> {
+    storage::purge_note(request)
+}
+
+#[tauri::command]
+fn empty_recycle_bin() -> Result<(), String> {
+    storage::empty_recycle_bin()
+}
+
+#[tauri::command]
 fn list_settings() -> Result<Vec<SettingRecord>, String> {
     storage::list_settings()
 }
@@ -73,6 +99,11 @@ pub fn run() {
             list_notes,
             update_note,
             set_note_pinned,
+            delete_note,
+            list_recycle_items,
+            restore_note,
+            purge_note,
+            empty_recycle_bin,
             list_settings,
             set_setting
         ])

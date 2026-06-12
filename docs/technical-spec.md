@@ -113,12 +113,19 @@ Phase 3 已实现基础命令：
 - `set_note_pinned`：置顶和取消置顶。
 - `create_folder`：创建文件夹。
 
+Phase 4 已实现回收站命令：
+
+- `delete_note`：软删除便签，标记 `is_deleted = 1` 并写入 `recycle_items`。
+- `list_recycle_items`：读取回收站列表。
+- `restore_note`：从回收站恢复便签。
+- `purge_note`：彻底删除单条回收站便签。
+- `empty_recycle_bin`：清空回收站。
+
 后续阶段再扩展：
 
 - `attachments`
 - `reminders`
 - `sticky_windows`
-- `recycle_items`
 
 `notes` 至少包含：
 
