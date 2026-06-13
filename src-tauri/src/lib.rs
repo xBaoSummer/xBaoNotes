@@ -141,6 +141,11 @@ fn open_attachment(request: AttachmentIdRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn read_attachment_data_url(request: AttachmentIdRequest) -> Result<String, String> {
+    storage::read_attachment_data_url(request)
+}
+
+#[tauri::command]
 fn list_settings() -> Result<Vec<SettingRecord>, String> {
     storage::list_settings()
 }
@@ -190,11 +195,26 @@ fn set_edge_position(
 
 #[tauri::command]
 fn get_auto_start_enabled() -> Result<bool, String> {
+    if storage::is_portable_mode() {
+        return Ok(false);
+    }
+
     is_auto_start_enabled()
 }
 
 #[tauri::command]
 fn set_auto_start_enabled(request: AutoStartRequest) -> Result<SettingRecord, String> {
+    if storage::is_portable_mode() {
+        if request.enabled {
+            return Err("便携版不支持开机自启动，请使用安装版开启该功能".to_string());
+        }
+
+        return storage::set_setting(SetSettingRequest {
+            key: "auto_start_enabled".to_string(),
+            value: "false".to_string(),
+        });
+    }
+
     configure_auto_start(request.enabled)?;
     storage::set_setting(SetSettingRequest {
         key: "auto_start_enabled".to_string(),
@@ -743,6 +763,7 @@ pub fn run() {
             create_attachment,
             list_attachments,
             open_attachment,
+            read_attachment_data_url,
             list_settings,
             set_setting,
             open_main_window,

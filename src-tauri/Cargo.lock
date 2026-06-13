@@ -5268,9 +5268,10 @@ dependencies = [
 
 [[package]]
 name = "xbao-notes"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "argon2",
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "rand_core 0.6.4",

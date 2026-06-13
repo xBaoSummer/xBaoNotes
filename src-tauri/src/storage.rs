@@ -1,5 +1,6 @@
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Duration, Months, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ const DATABASE_FILE_NAME: &str = "xbao-notes.sqlite3";
 
 #[derive(Debug, Serialize)]
 pub struct AppPaths {
+    pub is_portable: bool,
     pub root_dir: String,
     pub data_dir: String,
     pub attachments_dir: String,
@@ -268,6 +270,7 @@ pub fn init_storage() -> Result<StorageStatus, String> {
 
     create_schema(&connection)?;
     ensure_default_settings(&connection, &paths)?;
+    ensure_portable_settings(&connection, &paths)?;
     ensure_default_folder(&connection)?;
 
     read_storage_status()
@@ -809,6 +812,32 @@ pub fn open_attachment(request: AttachmentIdRequest) -> Result<(), String> {
     }
 
     tauri_plugin_opener::open_path(stored_path, None::<&str>).map_err(|error| error.to_string())
+}
+
+pub fn read_attachment_data_url(request: AttachmentIdRequest) -> Result<String, String> {
+    let id = request.id.trim();
+
+    if id.is_empty() {
+        return Err("附件 ID 不能为空".to_string());
+    }
+
+    let paths = ensure_app_paths()?;
+    let connection = open_connection(&paths)?;
+    let attachment = get_attachment(&connection, id)?;
+
+    if attachment.kind != "image" {
+        return Err("只有图片附件可以预览".to_string());
+    }
+
+    let stored_path = PathBuf::from(&attachment.stored_path);
+    let attachments_dir = PathBuf::from(&paths.attachments_dir);
+    ensure_managed_child_dir(&attachments_dir, &stored_path)?;
+
+    let bytes = fs::read(&stored_path)
+        .map_err(|error| format!("无法读取图片附件 {}: {}", stored_path.display(), error))?;
+    let encoded = general_purpose::STANDARD.encode(bytes);
+
+    Ok(format!("data:{};base64,{}", attachment.mime_type, encoded))
 }
 
 pub fn list_settings() -> Result<Vec<SettingRecord>, String> {
@@ -1428,9 +1457,30 @@ pub fn complete_reminder(request: ReminderIdRequest) -> Result<ReminderRecord, S
     get_reminder(&connection, id)
 }
 
+pub fn is_portable_mode() -> bool {
+    portable_root_dir().is_some()
+}
+
+fn portable_root_dir() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?.to_path_buf();
+
+    if exe_dir.join("portable.flag").is_file() {
+        return Some(exe_dir);
+    }
+
+    None
+}
+
 fn ensure_app_paths() -> Result<AppPaths, String> {
-    let documents_dir = dirs::document_dir().ok_or("无法定位当前用户的 Documents 目录")?;
-    let root_dir = documents_dir.join(APP_DIR_NAME);
+    let portable_root = portable_root_dir();
+    let is_portable = portable_root.is_some();
+    let root_dir = if let Some(root_dir) = portable_root {
+        root_dir
+    } else {
+        let documents_dir = dirs::document_dir().ok_or("无法定位当前用户的 Documents 目录")?;
+        documents_dir.join(APP_DIR_NAME)
+    };
     let data_dir = root_dir.join("Data");
     let attachments_dir = root_dir.join("Attachments");
     let backup_dir = root_dir.join("Backup");
@@ -1447,8 +1497,10 @@ fn ensure_app_paths() -> Result<AppPaths, String> {
         fs::create_dir_all(dir)
             .map_err(|error| format!("无法创建目录 {}: {}", dir.display(), error))?;
     }
+    ensure_writable_dir(&root_dir)?;
 
     Ok(AppPaths {
+        is_portable,
         root_dir: path_to_string(root_dir),
         data_dir: path_to_string(data_dir),
         attachments_dir: path_to_string(attachments_dir),
@@ -1580,6 +1632,18 @@ fn ensure_default_settings(connection: &Connection, paths: &AppPaths) -> Result<
     set_default_setting(connection, "auto_lock_minutes", "5")?;
     set_default_setting(connection, "backup_dir", &paths.backup_dir)?;
     set_default_setting(connection, "recycle_bin_dir", &paths.recycle_bin_dir)
+}
+
+fn ensure_portable_settings(connection: &Connection, paths: &AppPaths) -> Result<(), String> {
+    if !paths.is_portable {
+        return Ok(());
+    }
+
+    set_setting_value(connection, "backup_dir", &paths.backup_dir)?;
+    set_setting_value(connection, "recycle_bin_dir", &paths.recycle_bin_dir)?;
+    set_setting_value(connection, "auto_start_enabled", "false")?;
+
+    Ok(())
 }
 
 fn set_default_setting(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
@@ -2277,6 +2341,22 @@ fn remove_dir_contents(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_writable_dir(path: &Path) -> Result<(), String> {
+    let test_path = path.join(".xbao-notes-write-test");
+
+    match fs::write(&test_path, b"ok") {
+        Ok(()) => {
+            let _ = fs::remove_file(&test_path);
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "目录 {} 不可写，请把便携版移动到可写目录后再运行：{}",
+            path.display(),
+            error
+        )),
+    }
+}
+
 fn ensure_managed_child_dir(root: &Path, target: &Path) -> Result<(), String> {
     let root = root
         .canonicalize()
@@ -2318,6 +2398,7 @@ mod tests {
         let connection = Connection::open_in_memory().expect("open in-memory database");
         create_schema(&connection).expect("create schema");
         let paths = AppPaths {
+            is_portable: false,
             root_dir: "root".to_string(),
             data_dir: "data".to_string(),
             attachments_dir: "attachments".to_string(),

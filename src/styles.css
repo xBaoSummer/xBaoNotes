@@ -846,6 +846,13 @@ h2 {
   font-size: 13px;
 }
 
+.toggle-row small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .setting-options {
   width: 100%;
 }

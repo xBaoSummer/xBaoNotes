@@ -213,6 +213,18 @@ Phase 10 已实现打包、测试和优化基础能力：
 - Tauri 构建会生成 release exe、MSI 安装包和 NSIS 安装包。
 - 当前已通过最小启动 smoke test：启动 release exe，确认进程可正常运行后关闭测试进程。
 
+Phase 11 已实现便携版基础能力：
+
+- 存储层启动时检查可执行文件所在目录是否存在 `portable.flag`。
+- 如果存在 `portable.flag`，数据根目录使用可执行文件所在目录；安装版继续使用 `Documents\xBaoNotes`。
+- 便携版目录会自动创建 `Data`、`Attachments`、`Backup`、`Recycle Bin`。
+- 便携版启动时会检查软件所在目录可写；不可写时返回明确错误。
+- 便携版初始化时强制将备份路径和回收站路径设置为软件所在目录下的便携子目录。
+- 便携版默认关闭开机自启动，并禁止开启开机自启动。
+- `AppPaths` 新增 `is_portable` 字段，前端可显示当前是安装版还是便携版。
+- 图片附件预览新增 `read_attachment_data_url` 后端命令，避免便携目录不在固定 asset scope 时图片不可预览。
+- 新增 `scripts/package-portable.ps1`，从 release exe 生成 `xBaoNotesPortable_1.0.0_x64.zip`。
+
 `notes` 至少包含：
 
 - `id`

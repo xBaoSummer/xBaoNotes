@@ -568,3 +568,55 @@
 
 - Phase 10 只做构建、测试清单和基础优化；正式 Release 和便携版留到 Phase 11。
 - 当前 smoke test 是最小启动验证，不等同于完整人工逐项验收。
+
+## 2026-06-13 Phase 11 便携版和正式 Release 准备
+
+### Completed
+
+- 应用版本号提升到 `1.0.0`。
+- 新增 `portable.flag` 检测，便携版数据根目录使用可执行文件所在目录。
+- `AppPaths` 新增 `is_portable` 字段，前端可显示安装版/便携版数据模式。
+- 便携版自动创建 `Data`、`Attachments`、`Backup`、`Recycle Bin`。
+- 便携版启动时检查软件所在目录可写，不可写时返回明确错误。
+- 便携版强制将备份路径和回收站路径设置到软件所在目录。
+- 便携版默认关闭并禁止开启开机自启动。
+- 新增图片附件 data URL 预览命令，保证便携目录下图片附件可预览。
+- 新增 `scripts/package-portable.ps1`，可生成便携版 zip。
+- 新增 `docs/release-notes-v1.0.0.md`。
+- README、技术规范和测试清单已同步便携版和 1.0.0 产物信息。
+
+### Changed Files
+
+- `README.md`
+- `docs/technical-spec.md`
+- `docs/test-checklist.md`
+- `docs/release-notes-v1.0.0.md`
+- `package.json`
+- `package-lock.json`
+- `scripts/package-portable.ps1`
+- `src/App.tsx`
+- `src/styles.css`
+- `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/storage.rs`
+- `src-tauri/tauri.conf.json`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功。
+- `cargo test` 成功，7 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- `scripts\package-portable.ps1 -Version 1.0.0` 成功。
+- 安装版 release exe smoke test 成功。
+- 便携版 smoke test 成功，数据库创建在 `src-tauri\target\release\portable\xBaoNotesPortable\Data\xbao-notes.sqlite3`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_1.0.0_x64-setup.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_1.0.0_x64_en-US.msi`。
+- 已生成便携版 zip：`src-tauri\target\release\xBaoNotesPortable_1.0.0_x64.zip`。
+
+### Risks
+
+- GitHub Release 需要在 Phase 11 commit push 后创建，并上传三个构建产物。
+- 当前只做自动化构建和 smoke test；完整人工逐项验收仍应按 `docs/test-checklist.md` 执行。

@@ -2,25 +2,23 @@
 
 ## Current Phase
 
-Phase 11：便携版和正式 Release。
+Phase 11：正式 GitHub Release 上传。
 
 ## Next Tasks
 
-- 实现 `portable.flag` 检测。
-- 便携版数据目录改为软件所在目录。
-- 便携版默认关闭开机自启动。
-- 便携版 `asset` 协议支持软件所在目录下附件预览。
-- 构建安装版和便携版压缩包。
-- 为正式 Release 准备版本号和 Release Notes。
 - 上传 NSIS、MSI 和便携版 zip 到 GitHub Releases。
+- 确认 GitHub Release `v1.0.0` 可访问。
 
 ## Completed This Phase
 
-- Phase 10 已新增发布前测试清单。
-- Phase 10 已将测试清单加入 `AGENTS.md` 和执行标准。
-- Phase 10 已拆分前端构建 chunk，消除 500 kB 单 chunk 警告。
-- Phase 10 已完成前端构建、Rust 测试和 Tauri 完整打包。
-- Phase 10 已完成 release exe 最小启动 smoke test。
+- Phase 11 已实现 `portable.flag` 检测。
+- Phase 11 已实现便携版数据目录保存到软件所在目录。
+- Phase 11 已实现便携版默认关闭并禁止开机自启动。
+- Phase 11 已新增图片附件 data URL 预览，支持便携目录图片预览。
+- Phase 11 已构建安装版 NSIS、MSI。
+- Phase 11 已构建便携版 zip。
+- Phase 11 已完成安装版和便携版 smoke test。
+- Phase 11 已准备 Release Notes。
 
 ## Backlog
 

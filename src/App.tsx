@@ -25,6 +25,7 @@ type ReminderType = "once" | "due" | "repeat" | "anniversary" | "review";
 type RepeatRule = "none" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 type AppPaths = {
+  is_portable: boolean;
   root_dir: string;
   data_dir: string;
   attachments_dir: string;
@@ -1544,9 +1545,13 @@ function MainApp() {
               </div>
 
               <label className="toggle-row">
-                <span>开机自启动</span>
+                <span>
+                  开机自启动
+                  {storageStatus?.paths.is_portable ? <small>便携版不可用</small> : null}
+                </span>
                 <input
                   checked={autoStartEnabled}
+                  disabled={Boolean(storageStatus?.paths.is_portable)}
                   onChange={(event) => void handleSetAutoStartEnabled(event.target.checked)}
                   type="checkbox"
                 />
@@ -1579,7 +1584,13 @@ function MainApp() {
             <div className="status-list">
               <div>
                 <span>数据模式</span>
-                <strong>{storageStatus ? "SQLite 已初始化" : "初始化中"}</strong>
+                <strong>
+                  {storageStatus
+                    ? storageStatus.paths.is_portable
+                      ? "便携版"
+                      : "安装版"
+                    : "初始化中"}
+                </strong>
               </div>
               <div>
                 <span>文件夹</span>
@@ -2426,6 +2437,35 @@ function AttachmentPanel({
 }) {
   const images = attachments.filter((attachment) => attachment.kind === "image");
   const files = attachments.filter((attachment) => attachment.kind !== "image");
+  const [imageSources, setImageSources] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadImageSources() {
+      const nextSources: Record<string, string> = {};
+
+      for (const image of images) {
+        try {
+          nextSources[image.id] = await invoke<string>("read_attachment_data_url", {
+            request: { id: image.id },
+          });
+        } catch {
+          nextSources[image.id] = attachmentImageSrc(image);
+        }
+      }
+
+      if (!cancelled) {
+        setImageSources(nextSources);
+      }
+    }
+
+    void loadImageSources();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attachments]);
 
   return (
     <section className="attachment-panel" aria-label="附件">
@@ -2448,7 +2488,7 @@ function AttachmentPanel({
               title={image.original_name}
               type="button"
             >
-              <img alt={image.original_name} src={attachmentImageSrc(image)} />
+              <img alt={image.original_name} src={imageSources[image.id] ?? attachmentImageSrc(image)} />
             </button>
           ))}
         </div>

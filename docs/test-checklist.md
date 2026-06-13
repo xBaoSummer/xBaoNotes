@@ -92,3 +92,14 @@
 - 小窗口宽度下按钮可换行。
 - 路径文本不会撑破设置面板。
 - 空列表有可理解的空状态。
+
+## 11. 便携版
+
+- 便携版 zip 中包含 `xbao-notes.exe` 和 `portable.flag`。
+- 从便携目录启动后，界面显示数据模式为便携版。
+- 便携版数据库创建在 `xBaoNotesPortable\Data\xbao-notes.sqlite3`。
+- 便携版附件保存到 `xBaoNotesPortable\Attachments`。
+- 便携版备份保存到 `xBaoNotesPortable\Backup`。
+- 便携版回收站路径为 `xBaoNotesPortable\Recycle Bin`。
+- 便携版开机自启动不可开启。
+- 删除 `portable.flag` 后不再按便携版路径规则运行。
