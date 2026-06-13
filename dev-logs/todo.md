@@ -2,12 +2,13 @@
 
 ## Current Phase
 
-Phase 11：正式 GitHub Release 上传。
+全部计划阶段已完成。
 
 ## Next Tasks
 
-- 上传 NSIS、MSI 和便携版 zip 到 GitHub Releases。
-- 确认 GitHub Release `v1.0.0` 可访问。
+- 按 `docs/test-checklist.md` 做完整人工逐项验收。
+- 根据实际使用反馈修复问题。
+- 后续可规划数据文件加密、更多提醒规则和多显示器贴边入口优化。
 
 ## Completed This Phase
 
@@ -19,6 +20,8 @@ Phase 11：正式 GitHub Release 上传。
 - Phase 11 已构建便携版 zip。
 - Phase 11 已完成安装版和便携版 smoke test。
 - Phase 11 已准备 Release Notes。
+- Phase 11 已创建 GitHub Release `v1.0.0`。
+- Phase 11 已上传 NSIS、MSI 和便携版 zip。
 
 ## Backlog
 

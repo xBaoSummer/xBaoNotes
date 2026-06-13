@@ -2,6 +2,12 @@
 
 自用 Windows 桌面便签。
 
+正式版下载：
+
+```text
+https://github.com/xBaoSummer/xBaoNotes/releases/tag/v1.0.0
+```
+
 ## 当前状态
 
 Phase 1 基础骨架、Phase 2 本地数据层、Phase 3 主页面基础管理、Phase 4 回收站与安全删除、Phase 5 富文本和附件基础闭环、Phase 6 桌面贴出便签、Phase 7 贴边入口和托盘、Phase 8 提醒系统、Phase 9 密码锁和备份恢复、Phase 10 打包测试优化、Phase 11 便携版已完成：

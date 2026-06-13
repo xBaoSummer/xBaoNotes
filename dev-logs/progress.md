@@ -615,8 +615,12 @@
 - 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_1.0.0_x64-setup.exe`。
 - 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_1.0.0_x64_en-US.msi`。
 - 已生成便携版 zip：`src-tauri\target\release\xBaoNotesPortable_1.0.0_x64.zip`。
+- GitHub Release `v1.0.0` 创建成功：`https://github.com/xBaoSummer/xBaoNotes/releases/tag/v1.0.0`。
+- Release 附件已确认包含：
+  - `xBaoNotes_1.0.0_x64-setup.exe`
+  - `xBaoNotes_1.0.0_x64_en-US.msi`
+  - `xBaoNotesPortable_1.0.0_x64.zip`
 
 ### Risks
 
-- GitHub Release 需要在 Phase 11 commit push 后创建，并上传三个构建产物。
 - 当前只做自动化构建和 smoke test；完整人工逐项验收仍应按 `docs/test-checklist.md` 执行。
