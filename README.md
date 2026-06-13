@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-Phase 1 基础骨架、Phase 2 本地数据层、Phase 3 主页面基础管理、Phase 4 回收站与安全删除、Phase 5 富文本和附件基础闭环、Phase 6 桌面贴出便签、Phase 7 贴边入口和托盘、Phase 8 提醒系统、Phase 9 密码锁和备份恢复已完成：
+Phase 1 基础骨架、Phase 2 本地数据层、Phase 3 主页面基础管理、Phase 4 回收站与安全删除、Phase 5 富文本和附件基础闭环、Phase 6 桌面贴出便签、Phase 7 贴边入口和托盘、Phase 8 提醒系统、Phase 9 密码锁和备份恢复、Phase 10 打包测试优化已完成：
 
 - Tauri 2 + Rust 桌面壳
 - React + TypeScript + Vite 前端
@@ -58,6 +58,9 @@ Phase 1 基础骨架、Phase 2 本地数据层、Phase 3 主页面基础管理�
 - 支持选择备份目录
 - 支持手动备份数据库、附件和回收站目录
 - 支持从备份目录恢复，恢复前自动保护当前数据
+- 前端构建已拆分 React、Tauri、富文本编辑器和 vendor chunk，消除 500 kB 单 chunk 警告
+- 新增发布前测试清单 `docs/test-checklist.md`
+- 完整 Windows 打包和最小启动测试已通过
 
 ## 开发命令
 
@@ -108,7 +111,6 @@ Documents\xBaoNotes\Recycle Bin
 
 - 富文本正文以 HTML 形式保存在 SQLite 中。
 - 拖入附件会立即复制到 `Documents\xBaoNotes\Attachments`；正文内容仍需要点击“保存”写入数据库。
-- Phase 5 引入 TipTap 后前端包体积变大，后续可在性能优化阶段做富文本懒加载。
 - Phase 7 开始主窗口默认隐藏，启动后显示贴边入口；可从贴边入口或托盘打开主页面。
 - Phase 8 提醒依赖 Windows 通知权限；首次触发提醒时系统可能要求允许通知。
 - Phase 9 密码锁是软件访问保护，不是完整磁盘级数据加密。

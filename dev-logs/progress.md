@@ -530,3 +530,41 @@
 - 当前密码锁属于软件访问保护，不加密 SQLite 数据库和附件文件。
 - 当前备份产物为目录结构，不是压缩包；正式 Release 可继续保留目录备份，便携版分发会单独生成 zip。
 - 恢复备份时需要应用保持运行，恢复后会重新初始化本地存储状态。
+
+## 2026-06-13 Phase 10 打包、测试和优化
+
+### Completed
+
+- 新增发布前测试清单 `docs/test-checklist.md`。
+- 在 `AGENTS.md` 和执行标准中加入测试清单路径和发布前抽查要求。
+- 配置 Vite `manualChunks`，拆分 React、Tauri、TipTap/ProseMirror 富文本编辑器和 vendor 依赖。
+- 消除前端构建中的 500 kB 单 chunk 警告。
+- 完成 Windows release exe、MSI、NSIS 安装包构建。
+- 执行 release exe 最小启动 smoke test，确认程序进程可正常启动。
+- 更新 README 和技术规范中的 Phase 10 状态。
+
+### Changed Files
+
+- `AGENTS.md`
+- `README.md`
+- `docs/execution-standards.md`
+- `docs/technical-spec.md`
+- `docs/test-checklist.md`
+- `vite.config.ts`
+- `dev-logs/progress.md`
+- `dev-logs/todo.md`
+
+### Verification
+
+- `npm.cmd run build` 成功，构建输出拆分为 `react`、`editor`、`tauri`、`vendor` 和主入口 chunk。
+- `cargo test` 成功，7 个测试通过。
+- `npm.cmd run tauri -- build` 成功。
+- 已生成可执行文件：`src-tauri\target\release\xbao-notes.exe`。
+- 已生成 MSI 安装包：`src-tauri\target\release\bundle\msi\xBaoNotes_0.1.0_x64_en-US.msi`。
+- 已生成 NSIS 安装包：`src-tauri\target\release\bundle\nsis\xBaoNotes_0.1.0_x64-setup.exe`。
+- release exe smoke test 成功：启动 5 秒后进程仍存在，并已关闭测试进程。
+
+### Risks
+
+- Phase 10 只做构建、测试清单和基础优化；正式 Release 和便携版留到 Phase 11。
+- 当前 smoke test 是最小启动验证，不等同于完整人工逐项验收。

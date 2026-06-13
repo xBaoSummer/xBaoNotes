@@ -2,28 +2,25 @@
 
 ## Current Phase
 
-Phase 10：打包、测试和优化。
+Phase 11：便携版和正式 Release。
 
 ## Next Tasks
 
-- 跑完整 Windows 打包验证。
-- 补充核心功能测试清单。
-- 优化前端包体积警告，拆分富文本编辑器相关 chunk。
-- 检查主要空状态和错误状态。
-- 检查主窗口、贴边入口、贴出窗口、锁屏在常见窗口尺寸下的布局。
-- 检查用户数据目录、备份目录、回收站目录升级后不丢失。
-- 更新文档中的正式构建说明。
+- 实现 `portable.flag` 检测。
+- 便携版数据目录改为软件所在目录。
+- 便携版默认关闭开机自启动。
+- 便携版 `asset` 协议支持软件所在目录下附件预览。
+- 构建安装版和便携版压缩包。
+- 为正式 Release 准备版本号和 Release Notes。
+- 上传 NSIS、MSI 和便携版 zip 到 GitHub Releases。
 
 ## Completed This Phase
 
-- Phase 9 已新增密码锁和 Argon2 哈希保存。
-- Phase 9 已实现启动锁屏、解锁、立即锁定和自动锁定。
-- Phase 9 已实现修改密码和关闭密码锁。
-- Phase 9 已实现锁定时关闭贴出窗口、解锁后恢复贴出窗口。
-- Phase 9 已实现备份目录选择。
-- Phase 9 已实现手动备份。
-- Phase 9 已实现备份列表。
-- Phase 9 已实现从备份恢复，并在恢复前自动保护当前数据。
+- Phase 10 已新增发布前测试清单。
+- Phase 10 已将测试清单加入 `AGENTS.md` 和执行标准。
+- Phase 10 已拆分前端构建 chunk，消除 500 kB 单 chunk 警告。
+- Phase 10 已完成前端构建、Rust 测试和 Tauri 完整打包。
+- Phase 10 已完成 release exe 最小启动 smoke test。
 
 ## Backlog
 

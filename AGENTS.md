@@ -9,6 +9,7 @@
 - UI/交互设计规范：`docs/design-guidelines.md`
 - 分阶段开发计划：`docs/development-plan.md`
 - 执行与质量标准：`docs/execution-standards.md`
+- 发布测试清单：`docs/test-checklist.md`
 - 开发日志说明：`dev-logs/README.md`
 - 已完成事项记录：`dev-logs/progress.md`
 - 待办事项记录：`dev-logs/todo.md`

@@ -205,6 +205,14 @@ Phase 9 已实现密码锁和备份恢复基础能力：
 - 恢复备份前自动创建 `Before Restore` 安全备份。
 - 恢复操作只覆盖受管理的数据子目录，并在清理目录前校验目标路径位于 xBaoNotes 数据根目录内。
 
+Phase 10 已实现打包、测试和优化基础能力：
+
+- Vite 构建已配置 `manualChunks`，将 React、Tauri 插件、TipTap/ProseMirror 富文本编辑器和其他第三方依赖拆分到独立 chunk。
+- 前端构建已消除 500 kB 单 chunk 警告。
+- 新增 `docs/test-checklist.md`，作为正式发布前抽查清单。
+- Tauri 构建会生成 release exe、MSI 安装包和 NSIS 安装包。
+- 当前已通过最小启动 smoke test：启动 release exe，确认进程可正常运行后关闭测试进程。
+
 `notes` 至少包含：
 
 - `id`
