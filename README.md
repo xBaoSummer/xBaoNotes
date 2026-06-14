@@ -1,5 +1,7 @@
 # xBaoNotes
 
+#用Ai做了一坨屎
+
 自用 Windows 桌面便签。
 
 正式版下载：
